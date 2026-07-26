@@ -15,6 +15,7 @@ class Settings:
     openrouter_base_url: str
     openrouter_api_key: str
     openrouter_model: str
+    knowledge_root: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -26,4 +27,5 @@ class Settings:
             openrouter_base_url=os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             openrouter_model=os.environ.get("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet"),
+            knowledge_root=os.environ.get("KNOWLEDGE_ROOT", "./knowledge"),
         )

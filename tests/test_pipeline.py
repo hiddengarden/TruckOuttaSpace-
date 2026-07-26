@@ -4,7 +4,7 @@ from agency.pipeline import run_pipeline
 
 
 class FakeContentAgent:
-    def draft(self, brand, topic):
+    def draft(self, brand, topic, knowledge_base=None):
         return f"draft about {topic}"
 
 

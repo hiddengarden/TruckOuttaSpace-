@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from agency.agents.content_agent import ContentAgent
 from agency.agents.supervisor_agent import SupervisorAgent, Verdict
 from agency.brand import BrandProfile
+from agency.knowledge import KnowledgeBase
 from agency.postiz.client import PostizClient, PostType
 
 MAX_REVISION_ROUNDS = 2
@@ -24,8 +25,9 @@ def run_pipeline(
     supervisor_agent: SupervisorAgent,
     postiz_client: PostizClient | None = None,
     post_type: PostType = "draft",
+    knowledge_base: KnowledgeBase | None = None,
 ) -> PipelineResult:
-    text = content_agent.draft(brand, topic)
+    text = content_agent.draft(brand, topic, knowledge_base)
     verdicts: list[Verdict] = []
 
     for _ in range(MAX_REVISION_ROUNDS):

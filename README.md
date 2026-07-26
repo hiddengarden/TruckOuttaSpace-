@@ -20,12 +20,20 @@ instance.
   local OpenAI-compatible endpoint (Ollama by default) and falls back to
   OpenRouter (or any other OpenAI-compatible API) only on a connection
   failure or timeout. Swapping providers is a `.env` change.
-- **Two agent roles for the vertical slice:** a `ContentAgent` drafts copy in
-  the brand's voice, and a `SupervisorAgent` reviews every draft against that
-  brand's guidelines/banned topics before anything is sent to Postiz. Posts
-  are created with `type: draft` by default, so Postiz's own UI remains the
-  last human checkpoint before anything actually goes live on a social
-  platform.
+- **Three agent roles for the vertical slice:**
+  - `KnowledgeAgent` scrapes brand-approved URLs into a per-brand corpus of
+    markdown pages + downloaded images under `knowledge/<brand-slug>/`
+    (checks `robots.txt` before every fetch; caps images per page and image
+    size). One corpus per brand, kept separate from the code.
+  - `ContentAgent` drafts copy in the brand's voice, grounded in that
+    corpus: it pulls the top keyword-matching pages via `KnowledgeBase`
+    (lexical overlap for the MVP, no embeddings yet) and includes them as
+    context so it isn't inventing facts about the brand.
+  - `SupervisorAgent` reviews every draft against the brand's
+    guidelines/banned topics before anything is sent to Postiz.
+  - Posts are created with `type: draft` by default, so Postiz's own UI
+    remains the last human checkpoint before anything actually goes live on
+    a social platform.
 
 ## Setup
 
@@ -57,13 +65,28 @@ curl -H "Authorization: $POSTIZ_API_KEY" "$POSTIZ_BASE_URL/public/v1/integration
 
 ## Run the vertical slice
 
+Build the brand's knowledge base first (repeatable -- re-ingesting a URL
+replaces its old entry):
+
 ```bash
-python -m agency.cli --brand brands/my_brand.yaml --topic "our new fall collection"
+python -m agency.cli ingest --brand brands/my_brand.yaml \
+  --url https://mybrand.com/about \
+  --url https://mybrand.com/products/flagship
 ```
 
-This drafts a post, runs it through the supervisor (with up to one revision
-round), and — only if approved — creates a `draft` post in Postiz via the
-API. Add `--dry-run` to skip the Postiz call entirely, or `--publish now` /
+This writes `knowledge/<brand-slug>/pages/*.md` (with source-url/title/
+fetched-at front matter) and `knowledge/<brand-slug>/assets/*/img-N.*`.
+
+Then draft:
+
+```bash
+python -m agency.cli draft --brand brands/my_brand.yaml --topic "our new fall collection"
+```
+
+This grounds the draft in whatever knowledge base content matches the topic,
+runs the draft through the supervisor (with up to one revision round), and —
+only if approved — creates a `draft` post in Postiz via the API. Add
+`--dry-run` to skip the Postiz call entirely, or `--publish now` /
 `--publish schedule` once you're ready to go live.
 
 ## Tests
@@ -82,3 +105,7 @@ model runner is required to run the suite.
   via `--topic`.
 - Feedback loop from Postiz analytics (`GET /public/v1/analytics/:integration`)
   back into the content agent's prompt.
+- Embedding-based retrieval in `KnowledgeBase` (e.g. via Ollama's embeddings
+  endpoint) instead of keyword overlap, once corpora get large.
+- Scheduled/recurring re-ingestion so a brand's knowledge base stays current
+  instead of only updating on manual `ingest` calls.
