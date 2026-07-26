@@ -11,7 +11,10 @@ from agency.agents.content_agent import ContentAgent
 from agency.agents.designer import Designer
 from agency.agents.ghost_writer import GhostWriter, render_publication_markdown, slugify
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
+from agency.agents.devops import DevOps
 from agency.agents.music_agent import MusicAgent
+from agency.agents.rnd_agent import RnDAgent
+from agency.agents.secretary import Secretary
 from agency.agents.studio_worker import StudioWorker
 from agency.agents.supervisor_agent import SupervisorAgent
 from agency.agents.topic_agent import TopicAgent
@@ -189,6 +192,42 @@ def _run_assemble(args: argparse.Namespace, settings: Settings) -> None:
     print(video_path)
     if verdict is not None:
         print(f"Designer review: approved={verdict.approved} reason={verdict.reason}", file=sys.stderr)
+
+
+def _run_admin_report(args: argparse.Namespace, settings: Settings) -> None:
+    customer = load_customer(args.org)
+    postiz_client = PostizClient(settings.postiz_base_url, settings.postiz_api_key)
+    secretary = Secretary(postiz_client=postiz_client)
+
+    findings = secretary.run_all_checks(customer)
+    postiz_client.close()
+
+    if not findings:
+        print("No admin findings.")
+        return
+    for finding in findings:
+        label = finding.brand_slug + (f"/{finding.project_slug}" if finding.project_slug else "")
+        print(f"[{finding.severity}] {label}: {finding.message}")
+
+
+def _run_devops_health(settings: Settings) -> None:
+    devops = DevOps(settings)
+    for result in devops.check_service_health():
+        print(f"{result.name}: {'OK' if result.ok else 'DOWN'} ({result.detail})")
+    env_result = devops.check_env_file_permissions()
+    print(f"env_permissions: {'OK' if env_result.ok else 'WARN'} ({env_result.detail})")
+
+
+def _run_devops_backup(args: argparse.Namespace, settings: Settings) -> None:
+    roots = [settings.org_dir, settings.knowledge_root, settings.state_root, settings.assets_root, settings.content_root]
+    archive_path = DevOps(settings).backup(roots, args.backup_dir)
+    print(archive_path)
+
+
+def _run_devops_rnd(args: argparse.Namespace, settings: Settings) -> None:
+    devops = DevOps(settings)
+    rnd = RnDAgent(default_provider(settings))
+    print(devops.consult_rnd(rnd, focus=args.focus))
 
 
 def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
@@ -380,6 +419,19 @@ def main() -> None:
     )
     compose_parser.add_argument("--seed", type=int, default=None)
 
+    admin_report_parser = subparsers.add_parser(
+        "admin-report", help="Secretary: deadlines + Postiz platform-compliance findings for one customer"
+    )
+    admin_report_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
+
+    subparsers.add_parser("devops-health", help="DevOps: check Postiz/Ollama/ComfyUI reachability + .env permissions")
+
+    devops_backup_parser = subparsers.add_parser("devops-backup", help="DevOps: tar.gz the org/knowledge/state/assets/content roots")
+    devops_backup_parser.add_argument("--backup-dir", default="./backups")
+
+    devops_rnd_parser = subparsers.add_parser("devops-rnd", help="DevOps consults R&D for pipeline improvement suggestions")
+    devops_rnd_parser.add_argument("--focus", default=None, help="Optional area to focus suggestions on")
+
     assemble_parser = subparsers.add_parser(
         "assemble", help="Assemble the brand's asset bank into a short/reel via ffmpeg (StudioWorker)"
     )
@@ -463,6 +515,14 @@ def main() -> None:
         _run_compose(args, settings)
     elif args.command == "assemble":
         _run_assemble(args, settings)
+    elif args.command == "admin-report":
+        _run_admin_report(args, settings)
+    elif args.command == "devops-health":
+        _run_devops_health(settings)
+    elif args.command == "devops-backup":
+        _run_devops_backup(args, settings)
+    elif args.command == "devops-rnd":
+        _run_devops_rnd(args, settings)
     elif args.command == "write-publication":
         _run_write_publication(args, settings)
     elif args.command == "draft":

@@ -42,7 +42,24 @@ instance.
   ready-to-run -- see `workflows/README.md` for exporting your own. AMD
   ROCm/Vulkan is entirely a property of how you build/run your ComfyUI
   instance; this client neither knows nor cares.
-- **Ten agent roles so far -- the full creative layer is now built:**
+- **Org-layer roles are deliberately mostly plain Python, not LLM agents**
+  -- per the adopted framework research ("13 roles != 13 LLM agents";
+  deterministic work doesn't need a model call):
+  - `Secretary` (one per customer): `check_deadlines()` reads each brand's
+    `Project.due_date`; `check_platform_compliance()` flags disabled Postiz
+    integrations via the same `GET /public/v1/integrations` used elsewhere.
+    Paperwork/bookkeeping/security-auth admin have no concrete system here
+    to integrate with (none was specified), so `extra_checks` is a
+    bring-your-own extension point instead of a fabricated integration.
+  - `DevOps`: `check_service_health()` (Postiz/Ollama/ComfyUI reachability),
+    `check_env_file_permissions()`, `backup()` (real `tarfile` archives of
+    org/knowledge/state/assets/content -- verified with an actual archive
+    in this sandbox, not just mocked), and `consult_rnd()`.
+  - `RnDAgent` (one for the whole system): suggests open-source tooling
+    improvements from the model's own knowledge -- explicitly no live web
+    search wired in, so it can be stale about current tooling; that's a
+    documented limitation, not a silent gap.
+- **Ten agent roles in the creative/content layer:**
   - `KnowledgeAgent` scrapes brand-approved URLs into a per-brand corpus of
     markdown pages + downloaded images under
     `knowledge/<customer-slug>/<brand-slug>/` (checks `robots.txt` before
@@ -238,6 +255,15 @@ Or pass explicit `--image` paths. Saves to
 `assets/<customer>/<brand>/generated/videos/assembled.mp4`, and (unless
 `--no-review`) has `Designer` review the first extracted frame.
 
+## Admin, DevOps, and R&D
+
+```bash
+python -m agency.cli admin-report --org org/my_customer.yaml   # Secretary
+python -m agency.cli devops-health                              # Postiz/Ollama/ComfyUI + .env perms
+python -m agency.cli devops-backup --backup-dir ./backups        # tar.gz org/knowledge/state/assets/content
+python -m agency.cli devops-rnd --focus "video pipeline"         # DevOps consults RnDAgent
+```
+
 ## Human review queue
 
 Any draft the supervisor can't approve pauses instead of silently failing:
@@ -302,12 +328,14 @@ model runner is required to run the suite.
   attaching the returned media to a post's `value[].image`) -- right now
   `illustrate`/`animate`/`compose`/`write-publication`/`assemble` are all
   standalone commands, not part of `draft`/`run-all`.
-- `Secretary` (per customer: deadlines, platform compliance, paperwork,
-  bookkeeping) and `DevOps` (backups, operational security, pipeline health)
-  as plain Python graph nodes -- deliberately not LLM agents, per the
-  orchestration-framework research that shaped this design.
-- An `R&D` node that can suggest better open-source tooling -- real value
-  here needs a search-capable backend, which isn't wired up yet.
+- Every role from the original expanded scope now exists in some form;
+  `admin-report`/`devops-*` are standalone CLI commands, not yet folded
+  into `run-all`'s scheduled cycle (e.g. an automatic weekly backup, or
+  Secretary findings surfacing alongside escalations in `agency review`).
+- A search-capable backend for `RnDAgent` so it can genuinely track new
+  tooling instead of relying on the model's training data alone.
+- A real notification channel for Director/Secretary/DevOps findings
+  (email, Slack, etc.) instead of CLI stdout being the only surface.
 - Feedback loop from Postiz analytics (`GET /public/v1/analytics/:integration`)
   back into the content agent's and topic agent's prompts.
 - Embedding-based retrieval in `KnowledgeBase` instead of keyword overlap,

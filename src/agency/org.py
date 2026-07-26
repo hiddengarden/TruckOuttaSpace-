@@ -15,6 +15,7 @@ class Project(BaseModel):
     extra_guidelines: list[str] = Field(default_factory=list)
     extra_banned_topics: list[str] = Field(default_factory=list)
     posts_per_run: int | None = None
+    due_date: str | None = None  # ISO date (YYYY-MM-DD); checked by Secretary
 
 
 class Brand(BaseModel):
