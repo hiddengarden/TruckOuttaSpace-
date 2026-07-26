@@ -16,6 +16,9 @@ class Settings:
     openrouter_api_key: str
     openrouter_model: str
     knowledge_root: str
+    state_root: str
+    brands_dir: str
+    run_interval_seconds: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -28,4 +31,7 @@ class Settings:
             openrouter_api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             openrouter_model=os.environ.get("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet"),
             knowledge_root=os.environ.get("KNOWLEDGE_ROOT", "./knowledge"),
+            state_root=os.environ.get("STATE_ROOT", "./state"),
+            brands_dir=os.environ.get("BRANDS_DIR", "./brands"),
+            run_interval_seconds=int(os.environ.get("RUN_INTERVAL_SECONDS", "21600")),
         )

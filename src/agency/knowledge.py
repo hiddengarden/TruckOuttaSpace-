@@ -58,6 +58,9 @@ class KnowledgeBase:
         scored.sort(key=lambda doc: doc.score, reverse=True)
         return scored[:k]
 
+    def titles(self) -> list[str]:
+        return [entry["title"] for entry in self._manifest]
+
     def context_block(self, topic: str, k: int = 3, max_chars: int = 1000) -> str:
         docs = self.retrieve(topic, k)
         if not docs:

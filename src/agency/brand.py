@@ -13,6 +13,8 @@ class BrandProfile(BaseModel):
     audience: str
     guidelines: list[str] = Field(default_factory=list)
     banned_topics: list[str] = Field(default_factory=list)
+    knowledge_sources: list[str] = Field(default_factory=list)
+    posts_per_run: int = Field(default=1, ge=1)
 
 
 def load_brand(path: str | Path) -> BrandProfile:

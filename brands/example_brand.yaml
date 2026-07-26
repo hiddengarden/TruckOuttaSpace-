@@ -19,3 +19,11 @@ banned_topics:
   - "politics"
   - "competitor bashing"
   - "medical, legal, or financial claims"
+
+# Re-ingested by `agency run-all` / `agency loop` on every scheduled cycle.
+knowledge_sources:
+  - "https://example.com/replace-with-your-about-page"
+
+# How many posts the topic agent proposes (and the pipeline drafts/publishes)
+# each time this brand is processed in a batch/scheduled run.
+posts_per_run: 1

@@ -1,0 +1,8 @@
+[Unit]
+Description=Agency run-all: ingest, propose topics, draft, supervise, publish for every brand
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/agency
+EnvironmentFile=%h/agency/.env
+ExecStart=%h/agency/.venv/bin/python -m agency.cli run-all

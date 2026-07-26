@@ -20,12 +20,16 @@ instance.
   local OpenAI-compatible endpoint (Ollama by default) and falls back to
   OpenRouter (or any other OpenAI-compatible API) only on a connection
   failure or timeout. Swapping providers is a `.env` change.
-- **Three agent roles for the vertical slice:**
+- **Four agent roles:**
   - `KnowledgeAgent` scrapes brand-approved URLs into a per-brand corpus of
     markdown pages + downloaded images under `knowledge/<brand-slug>/`
     (checks `robots.txt` before every fetch; caps images per page and image
     size). One corpus per brand, kept separate from the code.
-  - `ContentAgent` drafts copy in the brand's voice, grounded in that
+  - `TopicAgent` proposes what to post about, grounded in that brand's
+    knowledge base titles and aware of recently-used topics (tracked in
+    `state/<brand-slug>/topic_history.json`) so a scheduled run doesn't
+    repeat itself.
+  - `ContentAgent` drafts copy in the brand's voice, grounded in the
     corpus: it pulls the top keyword-matching pages via `KnowledgeBase`
     (lexical overlap for the MVP, no embeddings yet) and includes them as
     context so it isn't inventing facts about the brand.
@@ -34,6 +38,12 @@ instance.
   - Posts are created with `type: draft` by default, so Postiz's own UI
     remains the last human checkpoint before anything actually goes live on
     a social platform.
+- **Multi-brand batch + scheduling.** `agency run-all` processes every
+  `brands/*.yaml` file in one pass: re-ingest each brand's
+  `knowledge_sources`, propose `posts_per_run` topics, draft, supervise, and
+  publish. `agency loop` runs that on a repeating in-process interval; for a
+  production host, `deploy/systemd/agency-run-all.{service,timer}` runs the
+  same command as a systemd user timer instead of a long-lived process.
 
 ## Setup
 
@@ -63,6 +73,9 @@ curl -H "Authorization: $POSTIZ_API_KEY" "$POSTIZ_BASE_URL/public/v1/groups"
 curl -H "Authorization: $POSTIZ_API_KEY" "$POSTIZ_BASE_URL/public/v1/integrations"
 ```
 
+Also fill in `knowledge_sources` (URLs to re-scrape on every scheduled run)
+and `posts_per_run` (how many posts to propose/draft per brand per run).
+
 ## Run the vertical slice
 
 Build the brand's knowledge base first (repeatable -- re-ingesting a URL
@@ -89,6 +102,42 @@ only if approved — creates a `draft` post in Postiz via the API. Add
 `--dry-run` to skip the Postiz call entirely, or `--publish now` /
 `--publish schedule` once you're ready to go live.
 
+## Running the whole agency (multiple brands, on a schedule)
+
+Every brand under `brands/*.yaml` in one pass, with topics chosen by the
+`TopicAgent` instead of a human passing `--topic`:
+
+```bash
+python -m agency.cli run-all              # one pass over every brand
+python -m agency.cli run-all --dry-run    # same, but never calls Postiz
+```
+
+`run-all` always creates `type: draft` posts in Postiz -- it has no
+`--publish` flag, since an unattended job should never be the thing that
+takes a post live.
+
+For recurring runs, either:
+
+```bash
+python -m agency.cli loop --interval-seconds 21600   # in-process, sleeps between cycles
+```
+
+or, on a systemd-managed host, install the provided timer instead of
+keeping a process running:
+
+```bash
+mkdir -p ~/agency && cp -r . ~/agency   # adjust to wherever you actually deploy this
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/agency-run-all.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now agency-run-all.timer
+```
+
+The unit files assume the repo lives at `~/agency` with a `.venv` and `.env`
+there; adjust `WorkingDirectory`/`ExecStart` in the `.service` file if yours
+lives elsewhere. `OnCalendar` in the `.timer` defaults to 09:00 and 17:00
+daily -- edit to taste.
+
 ## Tests
 
 ```bash
@@ -100,12 +149,11 @@ model runner is required to run the suite.
 
 ## Roadmap (not yet built)
 
-- Multiple brands run in a batch/cron loop instead of one CLI invocation.
-- A scheduling/strategist agent that proposes topics instead of taking one
-  via `--topic`.
 - Feedback loop from Postiz analytics (`GET /public/v1/analytics/:integration`)
-  back into the content agent's prompt.
+  back into the content agent's and topic agent's prompts.
 - Embedding-based retrieval in `KnowledgeBase` (e.g. via Ollama's embeddings
   endpoint) instead of keyword overlap, once corpora get large.
-- Scheduled/recurring re-ingestion so a brand's knowledge base stays current
-  instead of only updating on manual `ingest` calls.
+- Per-brand run cadence/calendar (right now every brand in `brands/` gets
+  the same interval from `loop`/the systemd timer).
+- Human-in-the-loop approval queue as an alternative to trusting the
+  `SupervisorAgent` alone before Postiz drafts are created.
