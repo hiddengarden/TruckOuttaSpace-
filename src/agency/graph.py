@@ -1,10 +1,12 @@
 from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from agency.agents.artist import Artist
 from agency.agents.content_agent import ContentAgent
 from agency.agents.supervisor_agent import SupervisorAgent
 from agency.knowledge import KnowledgeBase
@@ -25,6 +27,8 @@ class PostState(TypedDict):
     integration_ids: list[str]
     postiz_group_id: Optional[str]
     post_type: str
+    image_brief: Optional[str]
+    image_media: Optional[dict]
 
 
 def initial_post_state(
@@ -33,6 +37,7 @@ def initial_post_state(
     integration_ids: list[str],
     postiz_group_id: str | None,
     post_type: PostType = "draft",
+    image_brief: str | None = None,
 ) -> PostState:
     return {
         "brand": asdict(brand),
@@ -45,6 +50,8 @@ def initial_post_state(
         "integration_ids": integration_ids,
         "postiz_group_id": postiz_group_id,
         "post_type": post_type,
+        "image_brief": image_brief,
+        "image_media": None,
     }
 
 
@@ -53,14 +60,22 @@ def build_post_graph(
     supervisor_agent: SupervisorAgent,
     postiz_client: PostizClient | None,
     knowledge_base: KnowledgeBase | None = None,
+    artist: Artist | None = None,
+    image_assets_dir: str | Path | None = None,
 ) -> StateGraph:
-    """One post's lifecycle: draft -> supervise -> (revise loop | escalate) -> publish.
+    """One post's lifecycle: draft -> supervise -> (revise loop | escalate) ->
+    illustrate -> publish.
 
     Durability/interrupt earn their keep specifically at "escalate": a Director
     escalation can sit paused for hours or days (the checkpointer persists
     state across processes), then get resumed later with Command(resume=...)
     -- a plain function call would need the process to stay alive the whole
     time instead.
+
+    "illustrate" is a no-op unless both `artist` and the run's `image_brief`
+    are set: it generates one image via Artist, uploads it through
+    PostizClient.upload_media(), and attaches the resulting media ref to the
+    post before publish.
     """
 
     def content_node(state: PostState) -> dict:
@@ -101,15 +116,27 @@ def build_post_graph(
     def route_after_escalate(state: PostState) -> str:
         return "publish" if state["approved"] else END
 
+    def illustrate_node(state: PostState) -> dict:
+        if artist is None or postiz_client is None or not state.get("image_brief"):
+            return {}
+        brand = BrandContext(**state["brand"])
+        paths = artist.generate(brand, state["image_brief"], image_assets_dir or ".")
+        if not paths:
+            return {}
+        media = postiz_client.upload_media(paths[0])
+        return {"image_media": {"id": media["id"], "path": media["path"]}}
+
     def publish_node(state: PostState) -> dict:
         if postiz_client is None:
             return {}
+        image_media = state.get("image_media")
         response = postiz_client.create_post(
             post_type=state["post_type"],
             date_iso=datetime.now(timezone.utc).isoformat(),
             integration_ids=state["integration_ids"],
             content=state["draft"],
             group=state["postiz_group_id"],
+            images=[image_media] if image_media else None,
         )
         return {"postiz_response": response}
 
@@ -117,6 +144,7 @@ def build_post_graph(
     builder.add_node("content", content_node)
     builder.add_node("supervisor", supervisor_node)
     builder.add_node("escalate", escalate_node)
+    builder.add_node("illustrate", illustrate_node)
     builder.add_node("publish", publish_node)
 
     builder.add_edge(START, "content")
@@ -124,9 +152,10 @@ def build_post_graph(
     builder.add_conditional_edges(
         "supervisor",
         route_after_supervisor,
-        {"supervisor": "supervisor", "escalate": "escalate", "publish": "publish"},
+        {"supervisor": "supervisor", "escalate": "escalate", "publish": "illustrate"},
     )
-    builder.add_conditional_edges("escalate", route_after_escalate, {"publish": "publish", END: END})
+    builder.add_conditional_edges("escalate", route_after_escalate, {"publish": "illustrate", END: END})
+    builder.add_edge("illustrate", "publish")
     builder.add_edge("publish", END)
 
     return builder

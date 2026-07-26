@@ -256,14 +256,32 @@ def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
     knowledge_base = KnowledgeBase(customer.slug, brand.slug, settings.knowledge_root)
     postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
 
+    comfyui_client = None
+    artist = None
+    image_assets_dir = None
+    if args.with_image:
+        comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+        artist = Artist(provider, comfyui_client, settings.workflows_dir)
+        image_assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
+
     with _checkpointer(settings) as checkpointer:
         graph = build_post_graph(
-            ContentAgent(provider), SupervisorAgent(provider), postiz_client, knowledge_base
+            ContentAgent(provider),
+            SupervisorAgent(provider),
+            postiz_client,
+            knowledge_base,
+            artist=artist,
+            image_assets_dir=image_assets_dir,
         ).compile(checkpointer=checkpointer)
 
         thread_id = f"{customer.slug}:{brand.slug}:{project.slug if project else '_default'}:cli"
-        state = initial_post_state(ctx, args.topic, brand.integration_ids, brand.postiz_group_id, args.publish)
+        image_brief = args.topic if args.with_image else None
+        state = initial_post_state(
+            ctx, args.topic, brand.integration_ids, brand.postiz_group_id, args.publish, image_brief=image_brief
+        )
         output = graph.invoke(state, {"configurable": {"thread_id": thread_id}})
+    if comfyui_client is not None:
+        comfyui_client.close()
 
     print("--- Draft ---")
     print(output.get("draft", ""))
@@ -294,6 +312,12 @@ def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
     postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
     escalations = EscalationRegistry(settings.state_root)
 
+    comfyui_client = None
+    artist = None
+    if args.with_images:
+        comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+        artist = Artist(provider, comfyui_client, settings.workflows_dir)
+
     try:
         with _checkpointer(settings) as checkpointer:
             results = run_all(
@@ -307,11 +331,15 @@ def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
                 SupervisorAgent(provider),
                 postiz_client,
                 escalations,
+                artist=artist,
+                assets_root=settings.assets_root,
             )
     finally:
         knowledge_agent.close()
         if postiz_client is not None:
             postiz_client.close()
+        if comfyui_client is not None:
+            comfyui_client.close()
 
     for result in results:
         label = f"{result.customer_slug}/{result.brand_slug}"
@@ -497,6 +525,11 @@ def main() -> None:
     draft_parser.add_argument(
         "--dry-run", action="store_true", help="Run the agents but never call the Postiz API"
     )
+    draft_parser.add_argument(
+        "--with-image",
+        action="store_true",
+        help="Also generate an image (Artist, default ComfyUI workflow style) and attach it to the post",
+    )
 
     run_all_parser = subparsers.add_parser(
         "run-all", help="Ingest + propose topics + draft + supervise + publish for every customer/brand/project"
@@ -505,10 +538,14 @@ def main() -> None:
         "--org-dir", default=None, help="Directory of customer YAML files (default: ORG_DIR env / ./org)"
     )
     run_all_parser.add_argument("--dry-run", action="store_true")
+    run_all_parser.add_argument(
+        "--with-images", action="store_true", help="Also generate + attach an image to every post via Artist/ComfyUI"
+    )
 
     loop_parser = subparsers.add_parser("loop", help="Run `run-all` repeatedly forever, sleeping between cycles")
     loop_parser.add_argument("--org-dir", default=None)
     loop_parser.add_argument("--dry-run", action="store_true")
+    loop_parser.add_argument("--with-images", action="store_true")
     loop_parser.add_argument(
         "--interval-seconds", type=int, default=None, help="Default: RUN_INTERVAL_SECONDS env / 21600 (6h)"
     )

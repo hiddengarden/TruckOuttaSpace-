@@ -1,3 +1,5 @@
+import mimetypes
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -31,6 +33,13 @@ class PostizClient:
         response.raise_for_status()
         return response.json()
 
+    def upload_media(self, file_path: str | Path) -> dict[str, Any]:
+        path = Path(file_path)
+        mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        response = self._client.post("/upload", files={"file": (path.name, path.read_bytes(), mime_type)})
+        response.raise_for_status()
+        return response.json()
+
     def create_post(
         self,
         *,
@@ -40,7 +49,10 @@ class PostizClient:
         content: str,
         group: str | None = None,
         short_link: bool = False,
+        images: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        # images: MediaDto refs, i.e. {"id": ..., "path": ...} dicts as returned
+        # by upload_media() -- see libraries/nestjs-libraries/.../media.dto.ts.
         body = {
             "type": post_type,
             "shortLink": short_link,
@@ -49,7 +61,7 @@ class PostizClient:
             "posts": [
                 {
                     "integration": {"id": integration_id},
-                    "value": [{"content": content, "image": []}],
+                    "value": [{"content": content, "image": images or []}],
                     **({"group": group} if group else {}),
                 }
                 for integration_id in integration_ids

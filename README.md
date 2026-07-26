@@ -191,6 +191,13 @@ prints a thread id and exits with status 2 so you know to check `agency
 review`. Add `--dry-run` to skip the Postiz call entirely, or `--publish now`
 / `--publish schedule` once you're ready to go live.
 
+Add `--with-image` to also generate an image (via `Artist`, default ComfyUI
+workflow style, using the topic itself as the image brief) and attach it to
+the post -- uploaded through `PostizClient.upload_media()`
+(`POST /public/v1/upload`) before the post is created, so it's a real
+`MediaDto` reference, not a local path. `run-all`/`loop` take the equivalent
+`--with-images` flag.
+
 ## Generating an image (Artist + ComfyUI)
 
 Requires a running ComfyUI instance (`COMFYUI_BASE_URL`, default
@@ -348,11 +355,10 @@ model runner is required to run the suite.
 
 ## Roadmap (not yet built)
 
-- Wiring the creative layer into the post graph and Postiz (needs a
-  `PostizClient.upload_media()` using `POST /public/v1/upload`, then
-  attaching the returned media to a post's `value[].image`) -- right now
-  `illustrate`/`animate`/`compose`/`write-publication`/`assemble` are all
-  standalone commands, not part of `draft`/`run-all`.
+- `draft --with-image`/`run-all --with-images` cover the single-image case
+  (Artist, default workflow style, topic as the brief) -- `VideoMaster`,
+  `MusicAgent`, and `StudioWorker` output are still standalone
+  (`animate`/`compose`/`assemble`), not attachable to a Postiz post.
 - WordPress category/tag selection is manual (`create_post()` takes IDs
   looked up via `list_categories()`/`list_tags()`) -- no agent maps a
   brief to taxonomy yet. `write-publication --publish-to-wordpress` is

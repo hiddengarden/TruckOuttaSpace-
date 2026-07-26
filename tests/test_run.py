@@ -41,10 +41,27 @@ class NeverApprovingSupervisor:
 class FakePostizClient:
     def __init__(self):
         self.calls = []
+        self.uploads = []
 
     def create_post(self, **kwargs):
         self.calls.append(kwargs)
         return {"id": "post_1"}
+
+    def upload_media(self, file_path):
+        self.uploads.append(file_path)
+        return {"id": "media_1", "path": "/uploads/img.png"}
+
+
+class FakeArtist:
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, brand, brief, assets_dir, **kwargs):
+        self.calls.append((brief, assets_dir))
+        out = assets_dir / "generated.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"x")
+        return [out]
 
 
 def _brand(slug="widgets", knowledge_sources=None, projects=None):
@@ -178,3 +195,33 @@ def test_escalation_is_registered_then_resumable(tmp_path):
     assert output["approved"] is True
     assert postiz.calls[0]["content"] == "human-approved text"
     assert escalations.get(thread_id) is None
+
+
+def test_run_brand_project_attaches_image_when_artist_configured(tmp_path):
+    customer = Customer(slug="acme", name="Acme")
+    brand = _brand()
+    postiz = FakePostizClient()
+    artist = FakeArtist()
+
+    result = run_brand_project(
+        customer,
+        brand,
+        None,
+        knowledge_root=str(tmp_path / "knowledge"),
+        state_root=str(tmp_path / "state"),
+        checkpointer=MemorySaver(),
+        knowledge_agent=FakeKnowledgeAgent(),
+        topic_agent=FakeTopicAgent(),
+        content_agent=FakeContentAgent(),
+        supervisor_agent=FakeSupervisorAgent(),
+        postiz_client=postiz,
+        escalations=EscalationRegistry(tmp_path / "state"),
+        artist=artist,
+        assets_root=str(tmp_path / "assets"),
+    )
+
+    assert result.outcomes[0].status == "published"
+    assert artist.calls[0][0] == "topic-0"  # image brief defaults to the topic
+    expected_dir = tmp_path / "assets" / "acme" / "widgets" / "generated" / "images"
+    assert artist.calls[0][1] == expected_dir
+    assert postiz.calls[0]["images"] == [{"id": "media_1", "path": "/uploads/img.png"}]

@@ -1,8 +1,10 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
 
+from agency.agents.artist import Artist
 from agency.agents.content_agent import ContentAgent
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
 from agency.agents.supervisor_agent import SupervisorAgent
@@ -45,6 +47,8 @@ def run_brand_project(
     supervisor_agent: SupervisorAgent,
     postiz_client: PostizClient | None,
     escalations: EscalationRegistry,
+    artist: Artist | None = None,
+    assets_root: str | None = None,
 ) -> RunResult:
     project_slug = project.slug if project else None
     result = RunResult(customer_slug=customer.slug, brand_slug=brand.slug, project_slug=project_slug)
@@ -63,13 +67,17 @@ def run_brand_project(
         ctx, knowledge_base, topic_history.recent(), count=effective_posts_per_run(brand, project)
     )
 
-    graph = build_post_graph(content_agent, supervisor_agent, postiz_client, knowledge_base).compile(
-        checkpointer=checkpointer
+    image_assets_dir = (
+        Path(assets_root) / customer.slug / brand.slug / "generated" / "images" if artist is not None else None
     )
+    graph = build_post_graph(
+        content_agent, supervisor_agent, postiz_client, knowledge_base, artist=artist, image_assets_dir=image_assets_dir
+    ).compile(checkpointer=checkpointer)
 
     for topic in topics:
         thread_id = f"{customer.slug}:{brand.slug}:{project_slug or '_default'}:{uuid4().hex[:8]}"
-        state = initial_post_state(ctx, topic, brand.integration_ids, brand.postiz_group_id)
+        image_brief = topic if artist is not None else None
+        state = initial_post_state(ctx, topic, brand.integration_ids, brand.postiz_group_id, image_brief=image_brief)
         output = graph.invoke(state, {"configurable": {"thread_id": thread_id}})
         topic_history.record(topic)
         result.outcomes.append(_to_outcome(topic, thread_id, output, customer, brand, project_slug, escalations))
@@ -88,6 +96,8 @@ def run_all(
     supervisor_agent: SupervisorAgent,
     postiz_client: PostizClient | None,
     escalations: EscalationRegistry,
+    artist: Artist | None = None,
+    assets_root: str | None = None,
 ) -> list[RunResult]:
     results = []
     for customer in customers:
@@ -108,6 +118,8 @@ def run_all(
                         supervisor_agent,
                         postiz_client,
                         escalations,
+                        artist=artist,
+                        assets_root=assets_root,
                     )
                 )
     return results
@@ -123,10 +135,14 @@ def resume_escalation(
     approved: bool,
     text: str | None = None,
     reason: str | None = None,
+    artist: Artist | None = None,
+    image_assets_dir: str | None = None,
 ) -> dict:
     from langgraph.types import Command
 
-    graph = build_post_graph(content_agent, supervisor_agent, postiz_client).compile(checkpointer=checkpointer)
+    graph = build_post_graph(
+        content_agent, supervisor_agent, postiz_client, artist=artist, image_assets_dir=image_assets_dir
+    ).compile(checkpointer=checkpointer)
     output = graph.invoke(
         Command(resume={"approved": approved, "text": text, "reason": reason}),
         {"configurable": {"thread_id": thread_id}},
