@@ -8,6 +8,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from agency.agents.artist import Artist
 from agency.agents.content_agent import ContentAgent
+from agency.agents.designer import Designer
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
 from agency.agents.supervisor_agent import SupervisorAgent
 from agency.agents.topic_agent import TopicAgent
@@ -45,6 +46,11 @@ def _run_ingest(args: argparse.Namespace, settings: Settings) -> None:
         agent.close()
 
 
+def _available_styles(workflows_dir: str | Path) -> list[str]:
+    directory = Path(workflows_dir)
+    return sorted(p.stem for p in directory.glob("*.json") if not p.name.endswith(".mapping.json"))
+
+
 def _run_illustrate(args: argparse.Namespace, settings: Settings) -> None:
     customer = load_customer(args.org)
     brand = find_brand(customer, args.brand)
@@ -52,22 +58,29 @@ def _run_illustrate(args: argparse.Namespace, settings: Settings) -> None:
     ctx = brand_context(brand, project)
 
     provider = default_provider(settings)
+    designer = Designer(provider)
     comfyui_client = ComfyUIClient(settings.comfyui_base_url)
     artist = Artist(provider, comfyui_client, settings.workflows_dir)
 
+    style, checkpoint, negative_prompt = args.style, args.checkpoint, ""
+    if style is None:
+        rec = designer.recommend_style(ctx, args.brief, _available_styles(settings.workflows_dir))
+        style = rec.style
+        checkpoint = checkpoint or rec.checkpoint
+        negative_prompt = rec.negative_prompt
+        print(f"Designer recommended style={style!r} checkpoint={checkpoint!r}", file=sys.stderr)
+
     assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
     saved = artist.generate(
-        ctx,
-        args.brief,
-        assets_dir,
-        style=args.style,
-        checkpoint=args.checkpoint,
-        seed=args.seed,
+        ctx, args.brief, assets_dir, style=style, negative_prompt=negative_prompt, checkpoint=checkpoint, seed=args.seed
     )
     comfyui_client.close()
 
     for path in saved:
         print(path)
+        if not args.no_review:
+            verdict = designer.review_asset(ctx, args.brief, path)
+            print(f"  Designer review: approved={verdict.approved} reason={verdict.reason}", file=sys.stderr)
 
 
 def _run_animate(args: argparse.Namespace, settings: Settings) -> None:
@@ -245,10 +258,15 @@ def main() -> None:
     illustrate_parser.add_argument("--project", default=None, help="Optional project slug within that brand")
     illustrate_parser.add_argument("--brief", required=True, help="What the image should depict")
     illustrate_parser.add_argument(
-        "--style", default="default", help="Workflow name under workflows_dir (default: 'default')"
+        "--style",
+        default=None,
+        help="Workflow name under workflows_dir; omit to let the Designer recommend one",
     )
     illustrate_parser.add_argument("--checkpoint", default=None, help="Override the model checkpoint filename")
     illustrate_parser.add_argument("--seed", type=int, default=None)
+    illustrate_parser.add_argument(
+        "--no-review", action="store_true", help="Skip the Designer's post-generation QC pass"
+    )
 
     animate_parser = subparsers.add_parser(
         "animate", help="Generate a video via a local ComfyUI instance and save it to the brand's asset bank"

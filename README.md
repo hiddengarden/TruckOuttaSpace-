@@ -42,7 +42,7 @@ instance.
   ready-to-run -- see `workflows/README.md` for exporting your own. AMD
   ROCm/Vulkan is entirely a property of how you build/run your ComfyUI
   instance; this client neither knows nor cares.
-- **Six agent roles so far:**
+- **Seven agent roles so far:**
   - `KnowledgeAgent` scrapes brand-approved URLs into a per-brand corpus of
     markdown pages + downloaded images under
     `knowledge/<customer-slug>/<brand-slug>/` (checks `robots.txt` before
@@ -64,6 +64,15 @@ instance.
     standalone via `agency illustrate` for now (see below).
   - `VideoMaster` is the same pattern for video (`agency animate`), meant to
     hand its output to a future `StudioWorker` for shorts/reels assembly.
+  - `Designer` is the "intermediate entity" between content agents and the
+    render agents: `recommend_style()` picks a workflow/checkpoint/negative
+    prompt for a brief (used by `illustrate` whenever `--style` is omitted),
+    and `review_asset()` is a QC gate on the rendered output against brand
+    voice/audience/personality. Visual review needs a vision-capable model
+    configured (e.g. Ollama's `llava`) -- `complete_with_image()` on the
+    provider sends the standard OpenAI vision content-parts format
+    (`image_url` as a base64 data URI), which is real, not a stub, but
+    untested against an actual vision model in this sandbox.
 - **Escalation replaces "Director" as a role, not an LLM.** When the
   supervisor can't approve a draft (no revision offered, or revisions
   exhausted), the graph's `escalate` node interrupts and the run sits in
@@ -148,12 +157,16 @@ as-is.
 
 ```bash
 python -m agency.cli illustrate --org org/my_customer.yaml --brand my-brand \
-  --brief "a red bicycle in a sunlit garage" --style default --seed 42
+  --brief "a red bicycle in a sunlit garage" --seed 42
 ```
 
-Saves output(s) to `assets/<customer>/<brand>/generated/images/`. Not yet
-wired into `draft`/`run-all` -- attaching a generated image to a Postiz post
-needs `POST /public/v1/upload` first, which isn't built yet.
+Omit `--style` and the `Designer` picks one from whatever workflows exist
+under `workflows_dir`; pass `--style default` to force a specific one. After
+generation the `Designer` reviews the output (needs a vision-capable model;
+add `--no-review` to skip). Saves output(s) to
+`assets/<customer>/<brand>/generated/images/`. Not yet wired into
+`draft`/`run-all` -- attaching a generated image to a Postiz post needs
+`POST /public/v1/upload` first, which isn't built yet.
 
 ## Generating a video (VideoMaster + ComfyUI)
 
@@ -231,10 +244,10 @@ model runner is required to run the suite.
 - Wiring `Artist` into the post graph and Postiz (needs a
   `PostizClient.upload_media()` using `POST /public/v1/upload`, then
   attaching the returned media to a post's `value[].image`).
-- Creative layer: `Designer` (creative QC / brand-voice gate), a music/SFX
-  agent, `GhostWriter` (long-form content), and `StudioWorker` (assembling
-  the asset bank -- including Artist/VideoMaster output -- into
-  shorts/reels/video).
+- Creative layer still open: a music/SFX agent, `GhostWriter` (long-form
+  content, can ask `Designer` for illustrations/covers/diagrams), and
+  `StudioWorker` (assembling the asset bank into shorts/reels/video,
+  reporting to `Designer`).
 - `Secretary` (per customer: deadlines, platform compliance, paperwork,
   bookkeeping) and `DevOps` (backups, operational security, pipeline health)
   as plain Python graph nodes -- deliberately not LLM agents, per the
