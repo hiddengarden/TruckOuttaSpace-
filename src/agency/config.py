@@ -24,6 +24,7 @@ class Settings:
     workflows_dir: str
     video_workflows_dir: str
     assets_root: str
+    content_root: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -44,4 +45,5 @@ class Settings:
             workflows_dir=os.environ.get("WORKFLOWS_DIR", "./workflows/image"),
             video_workflows_dir=os.environ.get("VIDEO_WORKFLOWS_DIR", "./workflows/video"),
             assets_root=os.environ.get("ASSETS_ROOT", "./assets"),
+            content_root=os.environ.get("CONTENT_ROOT", "./content"),
         )

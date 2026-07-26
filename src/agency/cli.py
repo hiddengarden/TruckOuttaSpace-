@@ -9,6 +9,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from agency.agents.artist import Artist
 from agency.agents.content_agent import ContentAgent
 from agency.agents.designer import Designer
+from agency.agents.ghost_writer import GhostWriter, render_publication_markdown, slugify
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
 from agency.agents.supervisor_agent import SupervisorAgent
 from agency.agents.topic_agent import TopicAgent
@@ -107,6 +108,40 @@ def _run_animate(args: argparse.Namespace, settings: Settings) -> None:
 
     for path in saved:
         print(path)
+
+
+def _run_write_publication(args: argparse.Namespace, settings: Settings) -> None:
+    customer = load_customer(args.org)
+    brand = find_brand(customer, args.brand)
+    project = find_project(brand, args.project) if args.project else None
+    ctx = brand_context(brand, project)
+
+    provider = default_provider(settings)
+    designer = None if args.no_illustrations else Designer(provider)
+    comfyui_client = None
+    artist = None
+    if not args.no_illustrations:
+        comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+        artist = Artist(provider, comfyui_client, settings.workflows_dir)
+
+    assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
+    ghost_writer = GhostWriter(provider, designer=designer, artist=artist)
+    publication = ghost_writer.write_publication(
+        ctx,
+        args.brief,
+        assets_dir,
+        chapter_count=args.chapters,
+        illustrate_chapters=args.illustrate_chapters,
+        available_styles=[] if args.no_illustrations else _available_styles(settings.workflows_dir),
+    )
+    if comfyui_client is not None:
+        comfyui_client.close()
+
+    content_dir = Path(settings.content_root) / customer.slug / brand.slug
+    content_dir.mkdir(parents=True, exist_ok=True)
+    output_path = content_dir / f"{slugify(publication.title)}.md"
+    output_path.write_text(render_publication_markdown(publication))
+    print(output_path)
 
 
 def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
@@ -286,6 +321,21 @@ def main() -> None:
         help="History output key to collect ('images' for native SaveVideo, 'gifs' for VHS combine)",
     )
 
+    write_publication_parser = subparsers.add_parser(
+        "write-publication", help="Write a long-form publication (book/course/ebook) as markdown"
+    )
+    write_publication_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
+    write_publication_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
+    write_publication_parser.add_argument("--project", default=None, help="Optional project slug within that brand")
+    write_publication_parser.add_argument("--brief", required=True, help="What the publication is about")
+    write_publication_parser.add_argument("--chapters", type=int, default=5)
+    write_publication_parser.add_argument(
+        "--illustrate-chapters", action="store_true", help="Also request an illustration per chapter, not just a cover"
+    )
+    write_publication_parser.add_argument(
+        "--no-illustrations", action="store_true", help="Skip the cover/illustrations entirely (no ComfyUI needed)"
+    )
+
     draft_parser = subparsers.add_parser("draft", help="Draft, supervise, and optionally publish one post")
     draft_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
     draft_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
@@ -336,6 +386,8 @@ def main() -> None:
         _run_illustrate(args, settings)
     elif args.command == "animate":
         _run_animate(args, settings)
+    elif args.command == "write-publication":
+        _run_write_publication(args, settings)
     elif args.command == "draft":
         _run_draft(args, settings)
     elif args.command == "run-all":
