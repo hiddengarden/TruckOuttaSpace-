@@ -10,9 +10,9 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from agency.agents.artist import Artist
 from agency.agents.content_agent import ContentAgent
 from agency.agents.designer import Designer
+from agency.agents.devops import DevOps
 from agency.agents.ghost_writer import GhostWriter, render_publication_markdown, slugify
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
-from agency.agents.devops import DevOps
 from agency.agents.music_agent import MusicAgent
 from agency.agents.rnd_agent import RnDAgent
 from agency.agents.secretary import Secretary
@@ -23,9 +23,10 @@ from agency.agents.video_master import VideoMaster
 from agency.comfyui.client import ComfyUIClient
 from agency.config import Settings
 from agency.escalations import EscalationRegistry
-from agency.graph import build_post_graph, initial_post_state
-from agency.inference.provider import default_provider
+from agency.graph import build_compose_graph, build_finalize_graph, initial_compose_state, initial_finalize_input
+from agency.inference.provider import LocalInferenceUnavailable, default_provider
 from agency.knowledge import KnowledgeBase
+from agency.ledger import RunLedger
 from agency.org import brand_context, discover_customers, find_brand, find_project, load_customer
 from agency.postiz.client import PostizClient
 from agency.run import resume_escalation, run_all
@@ -38,6 +39,22 @@ def _checkpointer(settings: Settings):
     Path(settings.checkpoint_db_path).parent.mkdir(parents=True, exist_ok=True)
     with SqliteSaver.from_conn_string(settings.checkpoint_db_path) as saver:
         yield saver
+
+
+def _provider_for_brand(settings: Settings, ledger: RunLedger, brand_slug: str, allow_cloud_fallback: bool):
+    def on_fallback(detail: str) -> None:
+        ledger.record("fallback_used", brand=brand_slug, detail=detail)
+
+    return default_provider(settings, allow_fallback=allow_cloud_fallback, on_fallback=on_fallback)
+
+
+def _fail_on_local_inference_unavailable(brand_slug: str, exc: LocalInferenceUnavailable) -> None:
+    print(
+        f"Local inference unavailable and brand '{brand_slug}' has allow_cloud_fallback: false "
+        f"(set it true in org config to allow OpenRouter fallback): {exc}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def _run_ingest(args: argparse.Namespace, settings: Settings) -> None:
@@ -65,25 +82,31 @@ def _run_illustrate(args: argparse.Namespace, settings: Settings) -> None:
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
+    ledger = RunLedger(settings.state_root)
 
-    provider = default_provider(settings)
-    designer = Designer(provider)
-    comfyui_client = ComfyUIClient(settings.comfyui_base_url)
-    artist = Artist(provider, comfyui_client, settings.workflows_dir)
+    try:
+        provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
+        designer = Designer(provider)
+        comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+        artist = Artist(provider, comfyui_client, settings.workflows_dir)
 
-    style, checkpoint, negative_prompt = args.style, args.checkpoint, ""
-    if style is None:
-        rec = designer.recommend_style(ctx, args.brief, _available_styles(settings.workflows_dir))
-        style = rec.style
-        checkpoint = checkpoint or rec.checkpoint
-        negative_prompt = rec.negative_prompt
-        print(f"Designer recommended style={style!r} checkpoint={checkpoint!r}", file=sys.stderr)
+        style, checkpoint, negative_prompt = args.style, args.checkpoint, ""
+        if style is None:
+            rec = designer.recommend_style(ctx, args.brief, _available_styles(settings.workflows_dir))
+            style = rec.style
+            checkpoint = checkpoint or rec.checkpoint
+            negative_prompt = rec.negative_prompt
+            print(f"Designer recommended style={style!r} checkpoint={checkpoint!r}", file=sys.stderr)
 
-    assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
-    saved = artist.generate(
-        ctx, args.brief, assets_dir, style=style, negative_prompt=negative_prompt, checkpoint=checkpoint, seed=args.seed
-    )
-    comfyui_client.close()
+        assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
+        saved = artist.generate(
+            ctx, args.brief, assets_dir, style=style, negative_prompt=negative_prompt, checkpoint=checkpoint,
+            seed=args.seed,
+        )
+        comfyui_client.close()
+    except LocalInferenceUnavailable as exc:
+        _fail_on_local_inference_unavailable(brand.slug, exc)
+        return
 
     for path in saved:
         print(path)
@@ -97,22 +120,22 @@ def _run_animate(args: argparse.Namespace, settings: Settings) -> None:
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
+    ledger = RunLedger(settings.state_root)
 
-    provider = default_provider(settings)
-    comfyui_client = ComfyUIClient(settings.comfyui_base_url)
-    video_master = VideoMaster(provider, comfyui_client, settings.video_workflows_dir)
+    try:
+        provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
+        comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+        video_master = VideoMaster(provider, comfyui_client, settings.video_workflows_dir)
 
-    assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "videos"
-    saved = video_master.generate(
-        ctx,
-        args.brief,
-        assets_dir,
-        style=args.style,
-        checkpoint=args.checkpoint,
-        seed=args.seed,
-        output_key=args.output_key,
-    )
-    comfyui_client.close()
+        assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "videos"
+        saved = video_master.generate(
+            ctx, args.brief, assets_dir, style=args.style, checkpoint=args.checkpoint, seed=args.seed,
+            output_key=args.output_key,
+        )
+        comfyui_client.close()
+    except LocalInferenceUnavailable as exc:
+        _fail_on_local_inference_unavailable(brand.slug, exc)
+        return
 
     for path in saved:
         print(path)
@@ -123,27 +146,28 @@ def _run_write_publication(args: argparse.Namespace, settings: Settings) -> None
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
+    ledger = RunLedger(settings.state_root)
 
-    provider = default_provider(settings)
-    designer = None if args.no_illustrations else Designer(provider)
-    comfyui_client = None
-    artist = None
-    if not args.no_illustrations:
-        comfyui_client = ComfyUIClient(settings.comfyui_base_url)
-        artist = Artist(provider, comfyui_client, settings.workflows_dir)
+    try:
+        provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
+        designer = None if args.no_illustrations else Designer(provider)
+        comfyui_client = None
+        artist = None
+        if not args.no_illustrations:
+            comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+            artist = Artist(provider, comfyui_client, settings.workflows_dir)
 
-    assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
-    ghost_writer = GhostWriter(provider, designer=designer, artist=artist)
-    publication = ghost_writer.write_publication(
-        ctx,
-        args.brief,
-        assets_dir,
-        chapter_count=args.chapters,
-        illustrate_chapters=args.illustrate_chapters,
-        available_styles=[] if args.no_illustrations else _available_styles(settings.workflows_dir),
-    )
-    if comfyui_client is not None:
-        comfyui_client.close()
+        assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
+        ghost_writer = GhostWriter(provider, designer=designer, artist=artist)
+        publication = ghost_writer.write_publication(
+            ctx, args.brief, assets_dir, chapter_count=args.chapters, illustrate_chapters=args.illustrate_chapters,
+            available_styles=[] if args.no_illustrations else _available_styles(settings.workflows_dir),
+        )
+        if comfyui_client is not None:
+            comfyui_client.close()
+    except LocalInferenceUnavailable as exc:
+        _fail_on_local_inference_unavailable(brand.slug, exc)
+        return
 
     content_dir = Path(settings.content_root) / customer.slug / brand.slug
     content_dir.mkdir(parents=True, exist_ok=True)
@@ -170,14 +194,19 @@ def _run_compose(args: argparse.Namespace, settings: Settings) -> None:
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
+    ledger = RunLedger(settings.state_root)
 
-    provider = default_provider(settings)
-    comfyui_client = ComfyUIClient(settings.comfyui_base_url)
-    music_agent = MusicAgent(provider, comfyui_client, settings.audio_workflows_dir)
+    try:
+        provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
+        comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+        music_agent = MusicAgent(provider, comfyui_client, settings.audio_workflows_dir)
 
-    assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "audio"
-    saved = music_agent.generate(ctx, args.brief, assets_dir, style=args.style, seed=args.seed)
-    comfyui_client.close()
+        assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "audio"
+        saved = music_agent.generate(ctx, args.brief, assets_dir, style=args.style, seed=args.seed)
+        comfyui_client.close()
+    except LocalInferenceUnavailable as exc:
+        _fail_on_local_inference_unavailable(brand.slug, exc)
+        return
 
     for path in saved:
         print(path)
@@ -188,6 +217,7 @@ def _run_assemble(args: argparse.Namespace, settings: Settings) -> None:
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
+    ledger = RunLedger(settings.state_root)
 
     images_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
     image_paths = [Path(p) for p in args.image] if args.image else sorted(images_dir.glob("*.png")) + sorted(
@@ -197,13 +227,19 @@ def _run_assemble(args: argparse.Namespace, settings: Settings) -> None:
         print(f"No images found (pass --image or generate some into {images_dir})", file=sys.stderr)
         sys.exit(1)
 
-    designer = None if args.no_review else Designer(default_provider(settings))
-    worker = StudioWorker(designer=designer)
+    try:
+        designer = None
+        if not args.no_review:
+            designer = Designer(_provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback))
+        worker = StudioWorker(designer=designer)
 
-    output_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "videos"
-    video_path, verdict = worker.assemble_and_review(
-        ctx, args.brief, image_paths, output_dir, audio_path=args.audio, seconds_per_image=args.seconds_per_image
-    )
+        output_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "videos"
+        video_path, verdict = worker.assemble_and_review(
+            ctx, args.brief, image_paths, output_dir, audio_path=args.audio, seconds_per_image=args.seconds_per_image
+        )
+    except LocalInferenceUnavailable as exc:
+        _fail_on_local_inference_unavailable(brand.slug, exc)
+        return
 
     print(video_path)
     if verdict is not None:
@@ -241,9 +277,17 @@ def _run_devops_backup(args: argparse.Namespace, settings: Settings) -> None:
 
 
 def _run_devops_rnd(args: argparse.Namespace, settings: Settings) -> None:
+    ledger = RunLedger(settings.state_root)
     devops = DevOps(settings)
-    rnd = RnDAgent(default_provider(settings))
-    print(devops.consult_rnd(rnd, focus=args.focus))
+    try:
+        provider = default_provider(
+            settings, allow_fallback=args.allow_cloud_fallback,
+            on_fallback=lambda d: ledger.record("fallback_used", command="devops-rnd", detail=d),
+        )
+        print(devops.consult_rnd(RnDAgent(provider), focus=args.focus))
+    except LocalInferenceUnavailable as exc:
+        print(f"Local inference unavailable (pass --allow-cloud-fallback to allow OpenRouter): {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
@@ -251,8 +295,9 @@ def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
+    ledger = RunLedger(settings.state_root)
 
-    provider = default_provider(settings)
+    provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
     knowledge_base = KnowledgeBase(customer.slug, brand.slug, settings.knowledge_root)
     postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
 
@@ -264,40 +309,58 @@ def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
         artist = Artist(provider, comfyui_client, settings.workflows_dir)
         image_assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
 
-    with _checkpointer(settings) as checkpointer:
-        graph = build_post_graph(
-            ContentAgent(provider),
-            SupervisorAgent(provider),
-            postiz_client,
-            knowledge_base,
-            artist=artist,
-            image_assets_dir=image_assets_dir,
-        ).compile(checkpointer=checkpointer)
+    thread_id = f"{customer.slug}:{brand.slug}:{project.slug if project else '_default'}:cli"
+    finalize_output: dict = {}
 
-        thread_id = f"{customer.slug}:{brand.slug}:{project.slug if project else '_default'}:cli"
-        image_brief = args.topic if args.with_image else None
-        state = initial_post_state(
-            ctx, args.topic, brand.integration_ids, brand.postiz_group_id, args.publish, image_brief=image_brief
-        )
-        output = graph.invoke(state, {"configurable": {"thread_id": thread_id}})
-    if comfyui_client is not None:
-        comfyui_client.close()
+    try:
+        with _checkpointer(settings) as checkpointer:
+            compose_graph = build_compose_graph(ContentAgent(provider), SupervisorAgent(provider), knowledge_base)
+            compose_graph = compose_graph.compile(checkpointer=checkpointer)
+            output = compose_graph.invoke(
+                initial_compose_state(ctx, args.topic), {"configurable": {"thread_id": thread_id}}
+            )
 
-    print("--- Draft ---")
-    print(output.get("draft", ""))
-    print("\n--- Supervisor verdicts ---")
-    for i, verdict in enumerate(output.get("verdicts", []), 1):
-        print(f"[{i}] approved={verdict['approved']} reason={verdict['reason']}")
+            print("--- Draft ---")
+            print(output.get("draft", ""))
+            print("\n--- Supervisor verdicts ---")
+            for i, verdict in enumerate(output.get("verdicts", []), 1):
+                print(f"[{i}] approved={verdict['approved']} reason={verdict['reason']}")
 
-    if "__interrupt__" in output:
-        print(f"\nEscalated for human review. Resume with: agency resume --thread-id {thread_id}", file=sys.stderr)
-        sys.exit(2)
-    if not output.get("approved"):
-        print("\nRejected; nothing sent to Postiz.", file=sys.stderr)
-        sys.exit(1)
-    if output.get("postiz_response") is not None:
+            if "__interrupt__" in output:
+                print(
+                    f"\nEscalated for human review. Resume with: agency resume --thread-id {thread_id}",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+
+            image_brief = args.topic if args.with_image else None
+            finalize_graph = build_finalize_graph(postiz_client, artist, image_assets_dir).compile(
+                checkpointer=checkpointer
+            )
+            finalize_output = finalize_graph.invoke(
+                initial_finalize_input(brand.integration_ids, brand.postiz_group_id, args.publish, image_brief),
+                {"configurable": {"thread_id": thread_id}},
+            )
+    except LocalInferenceUnavailable as exc:
+        _fail_on_local_inference_unavailable(brand.slug, exc)
+        return
+    finally:
+        if comfyui_client is not None:
+            comfyui_client.close()
+
+    if finalize_output.get("postiz_response") is not None:
         print("\n--- Postiz response ---")
-        print(output["postiz_response"])
+        print(finalize_output["postiz_response"])
+
+
+def _parse_only(values: list[str] | None) -> set[tuple[str, str]] | None:
+    if not values:
+        return None
+    parsed = set()
+    for value in values:
+        customer_slug, _, brand_slug = value.partition("/")
+        parsed.add((customer_slug, brand_slug))
+    return parsed
 
 
 def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
@@ -307,16 +370,17 @@ def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
         print(f"No customer files found in {org_dir}", file=sys.stderr)
         return
 
-    provider = default_provider(settings)
+    ledger = RunLedger(settings.state_root)
     knowledge_agent = KnowledgeAgent(settings.knowledge_root)
     postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
     escalations = EscalationRegistry(settings.state_root)
+    comfyui_client = ComfyUIClient(settings.comfyui_base_url) if args.with_images else None
 
-    comfyui_client = None
-    artist = None
-    if args.with_images:
-        comfyui_client = ComfyUIClient(settings.comfyui_base_url)
-        artist = Artist(provider, comfyui_client, settings.workflows_dir)
+    def provider_factory(allow_cloud_fallback: bool):
+        def on_fallback(detail: str) -> None:
+            ledger.record("fallback_used", detail=detail)
+
+        return default_provider(settings, allow_fallback=allow_cloud_fallback, on_fallback=on_fallback)
 
     try:
         with _checkpointer(settings) as checkpointer:
@@ -326,13 +390,16 @@ def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
                 settings.state_root,
                 checkpointer,
                 knowledge_agent,
-                TopicAgent(provider),
-                ContentAgent(provider),
-                SupervisorAgent(provider),
+                provider_factory,
                 postiz_client,
                 escalations,
-                artist=artist,
+                ledger,
+                settings.ollama_base_url,
+                settings.ollama_model,
+                comfyui_client=comfyui_client,
+                workflows_dir=settings.workflows_dir,
                 assets_root=settings.assets_root,
+                only=_parse_only(args.only),
             )
     finally:
         knowledge_agent.close()
@@ -383,27 +450,57 @@ def _run_resume(args: argparse.Namespace, settings: Settings) -> None:
         print(f"No pending escalation with thread id {args.thread_id}", file=sys.stderr)
         sys.exit(1)
 
-    provider = default_provider(settings)
+    customer = next(
+        (c for c in discover_customers(settings.org_dir) if c.slug == entry["customer"]), None
+    )
+    if customer is None:
+        print(f"Customer '{entry['customer']}' not found under {settings.org_dir}", file=sys.stderr)
+        sys.exit(1)
+    brand = find_brand(customer, entry["brand"])
+
+    ledger = RunLedger(settings.state_root)
     postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
+    comfyui_client = None
+    artist = None
+    image_assets_dir = None
 
-    with _checkpointer(settings) as checkpointer:
-        output = resume_escalation(
-            checkpointer,
-            escalations,
-            ContentAgent(provider),
-            SupervisorAgent(provider),
-            postiz_client,
-            args.thread_id,
-            approved=args.approve,
-            text=args.text,
-            reason=args.reason,
-        )
+    try:
+        provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
+        if args.with_image:
+            comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+            artist = Artist(provider, comfyui_client, settings.workflows_dir)
+            image_assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
 
-    if output.get("postiz_response") is not None:
+        with _checkpointer(settings) as checkpointer:
+            output = resume_escalation(
+                checkpointer, escalations, ContentAgent(provider), SupervisorAgent(provider),
+                args.thread_id, approved=args.approve, text=args.text, reason=args.reason,
+            )
+
+            if not output.get("approved"):
+                print(f"Resumed {args.thread_id}: rejected ({output.get('rejected_reason')})")
+                return
+
+            image_brief = entry["topic"] if args.with_image else None
+            finalize_graph = build_finalize_graph(postiz_client, artist, image_assets_dir).compile(
+                checkpointer=checkpointer
+            )
+            finalize_output = finalize_graph.invoke(
+                initial_finalize_input(brand.integration_ids, brand.postiz_group_id, args.publish, image_brief),
+                {"configurable": {"thread_id": args.thread_id}},
+            )
+    except LocalInferenceUnavailable as exc:
+        _fail_on_local_inference_unavailable(brand.slug, exc)
+        return
+    finally:
+        if comfyui_client is not None:
+            comfyui_client.close()
+
+    if finalize_output.get("postiz_response") is not None:
         print("--- Postiz response ---")
-        print(output["postiz_response"])
+        print(finalize_output["postiz_response"])
     else:
-        print(f"Resumed {args.thread_id}: approved={output.get('approved')}")
+        print(f"Resumed {args.thread_id}: approved, but nothing published (dry-run or no postiz_client)")
 
 
 def main() -> None:
@@ -470,11 +567,18 @@ def main() -> None:
 
     subparsers.add_parser("devops-health", help="DevOps: check Postiz/Ollama/ComfyUI reachability + .env permissions")
 
-    devops_backup_parser = subparsers.add_parser("devops-backup", help="DevOps: tar.gz the org/knowledge/state/assets/content roots")
+    devops_backup_parser = subparsers.add_parser(
+        "devops-backup", help="DevOps: tar.gz the org/knowledge/state/assets/content roots"
+    )
     devops_backup_parser.add_argument("--backup-dir", default="./backups")
 
-    devops_rnd_parser = subparsers.add_parser("devops-rnd", help="DevOps consults R&D for pipeline improvement suggestions")
+    devops_rnd_parser = subparsers.add_parser(
+        "devops-rnd", help="DevOps consults R&D for pipeline improvement suggestions"
+    )
     devops_rnd_parser.add_argument("--focus", default=None, help="Optional area to focus suggestions on")
+    devops_rnd_parser.add_argument(
+        "--allow-cloud-fallback", action="store_true", help="Allow OpenRouter if the local model is unreachable"
+    )
 
     assemble_parser = subparsers.add_parser(
         "assemble", help="Assemble the brand's asset bank into a short/reel via ffmpeg (StudioWorker)"
@@ -541,11 +645,18 @@ def main() -> None:
     run_all_parser.add_argument(
         "--with-images", action="store_true", help="Also generate + attach an image to every post via Artist/ComfyUI"
     )
+    run_all_parser.add_argument(
+        "--only",
+        action="append",
+        default=None,
+        help="Restrict to one customer/brand (e.g. acme/widgets); repeatable. Default: every active brand.",
+    )
 
     loop_parser = subparsers.add_parser("loop", help="Run `run-all` repeatedly forever, sleeping between cycles")
     loop_parser.add_argument("--org-dir", default=None)
     loop_parser.add_argument("--dry-run", action="store_true")
     loop_parser.add_argument("--with-images", action="store_true")
+    loop_parser.add_argument("--only", action="append", default=None)
     loop_parser.add_argument(
         "--interval-seconds", type=int, default=None, help="Default: RUN_INTERVAL_SECONDS env / 21600 (6h)"
     )
@@ -560,6 +671,15 @@ def main() -> None:
     resume_parser.add_argument("--text", default=None, help="Replacement text to publish (only with --approve)")
     resume_parser.add_argument("--reason", default=None, help="Why it was rejected (only with --reject)")
     resume_parser.add_argument("--dry-run", action="store_true")
+    resume_parser.add_argument(
+        "--with-image", action="store_true", help="Also generate an image and attach it when publishing"
+    )
+    resume_parser.add_argument(
+        "--publish",
+        choices=["draft", "schedule", "now", "update"],
+        default="draft",
+        help="Postiz post type once approved (default: draft)",
+    )
 
     args = parser.parse_args()
     settings = Settings.from_env()

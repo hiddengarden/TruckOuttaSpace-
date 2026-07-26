@@ -16,6 +16,7 @@ class Project(BaseModel):
     extra_banned_topics: list[str] = Field(default_factory=list)
     posts_per_run: int | None = None
     due_date: str | None = None  # ISO date (YYYY-MM-DD); checked by Secretary
+    active: bool = True  # set false to pause this project without touching the brand
 
 
 class WordPressConfig(BaseModel):
@@ -42,6 +43,14 @@ class Brand(BaseModel):
     posts_per_run: int = Field(default=1, ge=1)
     projects: list[Project] = Field(default_factory=list)
     wordpress: WordPressConfig | None = None
+    # Local-only by default: a brand only ever reaches OpenRouter if this is
+    # explicitly set true. Keeps "local-first for privacy" a real per-brand
+    # decision instead of a silent, inherited default across the whole system.
+    allow_cloud_fallback: bool = False
+    # Set false to pause this brand entirely -- run-all/loop skip it, freeing
+    # its share of scheduled-run time for other brands without deleting or
+    # commenting out its config.
+    active: bool = True
 
 
 class Customer(BaseModel):

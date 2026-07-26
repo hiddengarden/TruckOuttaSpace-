@@ -27,21 +27,43 @@ instance.
   topics and their own topic focus. Brand-level `postiz_group_id` maps onto
   Postiz's native "customer/group" concept (`GET /public/v1/groups`), so
   multi-client scoping isn't reinvented.
-- **Inference is local-first.** `agency.inference.LocalFirstProvider` tries a
-  local OpenAI-compatible endpoint (Ollama by default) and falls back to
-  OpenRouter (or any other OpenAI-compatible API) only on a connection
-  failure or timeout. Swapping providers is a `.env` change.
-- **Orchestration is LangGraph, not hand-rolled control flow.** A single
-  post's lifecycle (draft → supervise → revise-loop → escalate → publish) is
-  a `StateGraph` (`agency/graph.py`), compiled with a checkpointer
-  (SQLite in production, in-memory in tests). That buys two things a plain
-  function chain doesn't: every run is keyed by a `thread_id` and durable
-  across process restarts, and a stuck/rejected draft can call `interrupt()`
-  to pause -- for hours or days -- and later be resumed from a completely
-  separate CLI invocation via `Command(resume=...)`. This is deliberately
-  the *only* place a framework was adopted: the org data model and the
-  Postiz/ComfyUI/knowledge-scraping clients stay plain Python, since no
-  framework does that part for you anyway.
+- **Inference is local-first, and local-only by default.**
+  `agency.inference.LocalFirstProvider` tries a local OpenAI-compatible
+  endpoint (Ollama by default) and only ever calls OpenRouter (or any other
+  OpenAI-compatible API) if that brand's `allow_cloud_fallback: true` is set
+  in its YAML -- the default is `false`, so a brand with nothing configured
+  never leaves the machine. When fallback isn't allowed and the local
+  endpoint is unreachable, the call raises `LocalInferenceUnavailable`
+  instead of silently going to the cloud; `run-all` catches it per
+  brand/project (records a `local_inference_unavailable` event to the run
+  ledger and skips just that unit), and single-shot commands like `draft`
+  print guidance and exit non-zero.
+- **Orchestration is LangGraph, not hand-rolled control flow, split into a
+  compose graph and a finalize graph.** `agency/graph.py`'s
+  `build_compose_graph` (draft → supervise → revise-loop → escalate) has no
+  ComfyUI or Postiz dependency at all -- it only ever touches the local LLM.
+  `build_finalize_graph` (illustrate → publish) picks up from whatever a
+  compose run already checkpointed under the same `thread_id` (state
+  persists across differently-shaped compiled graphs sharing a checkpointer,
+  verified empirically) and is the only place ComfyUI/Postiz calls happen.
+  Both are compiled with a checkpointer (SQLite in production, in-memory in
+  tests), which buys two things a plain function chain doesn't: every run is
+  durable across process restarts, and a stuck/rejected draft can call
+  `interrupt()` to pause -- for hours or days -- and later be resumed from a
+  completely separate CLI invocation via `Command(resume=...)`. The finalize
+  graph also carries an explicit idempotency guard (`route_before_illustrate`,
+  checked as the first thing on any invoke, before a retry can waste a
+  ComfyUI render): if a prior attempt marked `publish_attempted` but never
+  recorded a `postiz_response`, that's treated as ambiguous (process may have
+  crashed mid-`create_post`) and the retry skips publishing rather than
+  risking a duplicate -- `run.py:run_finalize` checks the same state before
+  ever building fresh input, since an explicit `invoke()` input always wins
+  over checkpoint values for the same keys (also verified empirically, and
+  the reason `initial_finalize_input()` never sets `image_media`/
+  `postiz_response`/`publish_attempted` itself). This framework split is
+  deliberately the *only* place a framework was adopted: the org data model
+  and the Postiz/ComfyUI/knowledge-scraping clients stay plain Python, since
+  no framework does that part for you anyway.
 - **ComfyUI is a plain HTTP client, no framework, no GPU-specific code.**
   `agency/comfyui/client.py` wraps the real queue API (`POST /prompt`,
   `GET /history/{id}`, `GET /view`), verified against
@@ -86,8 +108,11 @@ instance.
   - `Artist` writes an image-generation prompt from a brief + the brand's
     voice, then renders it via ComfyUI. `style` selects a workflow file
     (structurally different graphs); `checkpoint` overrides just the model
-    within one workflow. Not yet wired into the post graph itself -- run it
-    standalone via `agency illustrate` for now (see below).
+    within one workflow. Runs standalone via `agency illustrate`, or inside
+    the finalize graph's `illustrate` node when `--with-image`/
+    `--with-images` is passed to `draft`/`resume`/`run-all`/`loop` -- built
+    fresh per brand/topic in `run_all` rather than shared, so its own
+    prompt-writing call respects that brand's `allow_cloud_fallback`.
   - `VideoMaster` is the same pattern for video (`agency animate`), meant to
     hand its output to a future `StudioWorker` for shorts/reels assembly.
   - `Designer` is the "intermediate entity" between content agents and the
@@ -122,12 +147,35 @@ instance.
   exhausted), the graph's `escalate` node interrupts and the run sits in
   `agency review` until a human calls `agency resume`. That routing logic is
   plain Python -- no LLM call needed to decide "ask a human."
-- **Multi-brand/customer batch + scheduling.** `agency run-all` walks every
-  `org/*.yaml` customer, every brand, every project (or the brand itself if
-  it has none): re-ingest `knowledge_sources`, propose topics, run the graph
-  per topic. `agency loop` repeats that on an interval; on a systemd-managed
-  host, `deploy/systemd/agency-run-all.{service,timer}` does the same as a
-  timer instead of a long-lived process.
+- **Multi-brand/customer batch, in two global phases, with per-brand/project
+  on-off control.** `agency run-all` walks every `org/*.yaml` customer, every
+  *active* brand (`active: true` is the default; set `false` in a brand's or
+  project's YAML to pause it without deleting config, e.g. to hand-tune how
+  much of a scheduled run's time budget goes where), every active project
+  (or the brand itself if it has none): re-ingest `knowledge_sources`,
+  propose topics, run the compose graph per topic. Phase 1 does this for
+  *every* active brand/project across *every* customer before Phase 2 runs
+  any finalize (illustrate+publish) work -- not per-brand -- because Ollama
+  and ComfyUI share one GPU, and interleaving them per-brand would still
+  contend across brand boundaries; only a whole-run-wide split avoids it.
+  Between phases, `unload_ollama()` frees VRAM (`POST /api/generate` with
+  `keep_alive: 0`, per Ollama's own FAQ) before any ComfyUI call. `--only
+  customer-slug/brand-slug` (repeatable) restricts a one-off run to specific
+  brands without touching `active` in the YAML. `agency loop` repeats
+  `run-all` on an interval; on a systemd-managed host,
+  `deploy/systemd/agency-run-all.{service,timer}` does the same as a timer
+  instead of a long-lived process.
+- **Every run is diagnosable after the fact.** `agency.ledger.RunLedger`
+  appends one JSON line per notable event (`compose_done`,
+  `local_inference_unavailable`, `finalize_done`,
+  `finalize_ambiguous_skip`, cloud-fallback events) to
+  `state/run_ledger.jsonl` -- since `run-all`/`loop` are meant to run
+  unattended on a schedule, this is the record of what actually happened
+  without needing to have been watching the terminal. Shared JSON state
+  files that multiple invocations could touch concurrently (e.g. topic
+  history) are guarded with `agency.filelock.locked()`, a thin
+  `fcntl.flock` wrapper, so an overlapping `run-all` and a manual `draft`
+  can't race on a read-modify-write.
 
 ## Setup
 
@@ -160,6 +208,14 @@ curl -H "Authorization: $POSTIZ_API_KEY" "$POSTIZ_BASE_URL/public/v1/integration
 Also fill in `knowledge_sources` (URLs to re-scrape on every scheduled run)
 and `posts_per_run`. Add a `projects:` entry per brand for any campaign/theme
 that should get its own topic focus and rotation.
+
+Two more per-brand (and, for `active`, also per-project) fields, both
+optional and defaulted safely:
+- `allow_cloud_fallback: true` -- opt this brand into OpenRouter when the
+  local model is unreachable. Omit it (or set `false`) to keep the brand
+  local-only, which is the default for every brand.
+- `active: false` -- pause a brand or project so `run-all`/`loop` skip it
+  entirely, without deleting its config. Defaults to `true`.
 
 ## Run the vertical slice
 
@@ -313,8 +369,10 @@ completely separate process, days after `run-all` created the escalation.
 ## Running the whole agency (multiple customers/brands, on a schedule)
 
 ```bash
-python -m agency.cli run-all              # one pass over every org/*.yaml customer
-python -m agency.cli run-all --dry-run    # same, but never calls Postiz
+python -m agency.cli run-all                                    # one pass over every active brand in every org/*.yaml customer
+python -m agency.cli run-all --dry-run                           # same, but never calls Postiz
+python -m agency.cli run-all --with-images                       # also render + attach an Artist/ComfyUI image per post
+python -m agency.cli run-all --only acme/widgets --only acme/gadgets  # restrict to specific brands, ignoring `active`
 ```
 
 `run-all` always creates `type: draft` posts in Postiz -- it has no
