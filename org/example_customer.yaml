@@ -1,0 +1,44 @@
+# One file per customer (client). Nested brands, nested projects.
+# Path convention: org/<customer-slug>.yaml
+slug: example-customer
+name: Example Customer
+
+brands:
+  - slug: example-brand
+    name: Example Co
+    # `postiz_group_id` maps to a Postiz "customer/group" (GET /public/v1/groups)
+    # so channel access stays scoped per brand inside a single Postiz instance.
+    postiz_group_id: "REPLACE_WITH_POSTIZ_GROUP_ID"
+    integration_ids:
+      - "REPLACE_WITH_POSTIZ_INTEGRATION_ID"
+
+    voice: "Confident and friendly, no corporate jargon, short sentences."
+    audience: "Small business owners in the US who sell online."
+
+    guidelines:
+      - "Always include one clear call to action."
+      - "Max 2 emojis per post."
+      - "No exclamation-point stacking."
+
+    banned_topics:
+      - "politics"
+      - "competitor bashing"
+      - "medical, legal, or financial claims"
+
+    # Re-ingested by `agency run-all` / `agency loop` on every scheduled cycle.
+    knowledge_sources:
+      - "https://example.com/replace-with-your-about-page"
+
+    # Default posts proposed/drafted per run when a brand has no projects,
+    # or a project below doesn't override it.
+    posts_per_run: 1
+
+    # Projects are a sub-brand layer: campaigns, themes, initiatives, series.
+    # A brand with no projects just runs against its own voice/guidelines.
+    projects:
+      - slug: fall-launch
+        name: Fall Launch Campaign
+        kind: campaign
+        topic_hint: "our new fall product line"
+        # extra_guidelines / extra_banned_topics / posts_per_run may all
+        # override or add to the brand's own, scoped to this project only.

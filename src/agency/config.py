@@ -17,7 +17,8 @@ class Settings:
     openrouter_model: str
     knowledge_root: str
     state_root: str
-    brands_dir: str
+    org_dir: str
+    checkpoint_db_path: str
     run_interval_seconds: int
 
     @classmethod
@@ -32,6 +33,7 @@ class Settings:
             openrouter_model=os.environ.get("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet"),
             knowledge_root=os.environ.get("KNOWLEDGE_ROOT", "./knowledge"),
             state_root=os.environ.get("STATE_ROOT", "./state"),
-            brands_dir=os.environ.get("BRANDS_DIR", "./brands"),
+            org_dir=os.environ.get("ORG_DIR", "./org"),
+            checkpoint_db_path=os.environ.get("CHECKPOINT_DB_PATH", "./state/checkpoints.db"),
             run_interval_seconds=int(os.environ.get("RUN_INTERVAL_SECONDS", "21600")),
         )

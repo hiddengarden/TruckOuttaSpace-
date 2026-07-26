@@ -5,7 +5,6 @@ import pytest
 import respx
 
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
-from agency.brand import load_brand
 
 PAGE_HTML = """
 <html>
@@ -21,13 +20,8 @@ PAGE_HTML = """
 """
 
 
-@pytest.fixture
-def brand():
-    return load_brand("brands/example_brand.yaml")
-
-
 @respx.mock
-def test_ingest_url_writes_markdown_and_downloads_images(tmp_path, brand):
+def test_ingest_url_writes_markdown_and_downloads_images(tmp_path):
     respx.get("https://example-co.test/robots.txt").mock(return_value=httpx.Response(404))
     respx.get("https://example-co.test/about").mock(return_value=httpx.Response(200, text=PAGE_HTML))
     respx.get("https://example-co.test/images/hero.jpg").mock(
@@ -35,10 +29,10 @@ def test_ingest_url_writes_markdown_and_downloads_images(tmp_path, brand):
     )
 
     agent = KnowledgeAgent(tmp_path)
-    doc = agent.ingest_url(brand, "https://example-co.test/about")
+    doc = agent.ingest_url("example-customer", "example-brand", "https://example-co.test/about")
 
     assert doc.title == "Our Story"
-    assert doc.asset_paths == ["example-brand/assets/our-story/img-0.jpg"]
+    assert doc.asset_paths == ["example-customer/example-brand/assets/our-story/img-0.jpg"]
 
     markdown_path = tmp_path / doc.markdown_path
     assert markdown_path.exists()
@@ -49,26 +43,26 @@ def test_ingest_url_writes_markdown_and_downloads_images(tmp_path, brand):
     image_path = tmp_path / doc.asset_paths[0]
     assert image_path.read_bytes() == b"fake-jpeg-bytes"
 
-    manifest = json.loads((tmp_path / "example-brand" / "manifest.json").read_text())
+    manifest = json.loads((tmp_path / "example-customer" / "example-brand" / "manifest.json").read_text())
     assert len(manifest) == 1
     assert manifest[0]["id"] == "our-story"
 
 
 @respx.mock
-def test_ingest_url_respects_robots_disallow(tmp_path, brand):
+def test_ingest_url_respects_robots_disallow(tmp_path):
     respx.get("https://example-co.test/robots.txt").mock(
         return_value=httpx.Response(200, text="User-agent: *\nDisallow: /\n")
     )
 
     agent = KnowledgeAgent(tmp_path)
     with pytest.raises(RobotsDisallowed):
-        agent.ingest_url(brand, "https://example-co.test/about")
+        agent.ingest_url("example-customer", "example-brand", "https://example-co.test/about")
 
-    assert not (tmp_path / "example-brand").exists()
+    assert not (tmp_path / "example-customer").exists()
 
 
 @respx.mock
-def test_reingesting_same_page_replaces_manifest_entry(tmp_path, brand):
+def test_reingesting_same_page_replaces_manifest_entry(tmp_path):
     respx.get("https://example-co.test/robots.txt").mock(return_value=httpx.Response(404))
     respx.get("https://example-co.test/about").mock(return_value=httpx.Response(200, text=PAGE_HTML))
     respx.get("https://example-co.test/images/hero.jpg").mock(
@@ -76,8 +70,8 @@ def test_reingesting_same_page_replaces_manifest_entry(tmp_path, brand):
     )
 
     agent = KnowledgeAgent(tmp_path)
-    agent.ingest_url(brand, "https://example-co.test/about")
-    agent.ingest_url(brand, "https://example-co.test/about")
+    agent.ingest_url("example-customer", "example-brand", "https://example-co.test/about")
+    agent.ingest_url("example-customer", "example-brand", "https://example-co.test/about")
 
-    manifest = json.loads((tmp_path / "example-brand" / "manifest.json").read_text())
+    manifest = json.loads((tmp_path / "example-customer" / "example-brand" / "manifest.json").read_text())
     assert len(manifest) == 1

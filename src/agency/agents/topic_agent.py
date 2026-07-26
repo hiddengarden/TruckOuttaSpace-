@@ -1,8 +1,8 @@
 import json
 
-from agency.brand import BrandProfile
 from agency.inference.provider import LLMProvider
 from agency.knowledge import KnowledgeBase
+from agency.org import BrandContext
 
 _SYSTEM_TEMPLATE = (
     "You are the content strategist for {name}.\n"
@@ -10,6 +10,7 @@ _SYSTEM_TEMPLATE = (
     "Audience: {audience}\n"
     "Guidelines:\n{guidelines}\n"
     "Never propose a topic touching: {banned}.\n"
+    "{focus_line}"
     "{knowledge_line}"
     "{history_line}"
     "Reply with ONLY a JSON array of exactly {count} distinct, specific post topic "
@@ -25,7 +26,7 @@ class TopicAgent:
 
     def propose(
         self,
-        brand: BrandProfile,
+        brand: BrandContext,
         knowledge_base: KnowledgeBase,
         recent_topics: list[str],
         count: int = 1,
@@ -37,6 +38,7 @@ class TopicAgent:
             audience=brand.audience,
             guidelines="\n".join(f"- {g}" for g in brand.guidelines),
             banned=", ".join(brand.banned_topics),
+            focus_line=f"Current focus: {brand.topic_hint}.\n" if brand.topic_hint else "",
             knowledge_line=f"Brand knowledge base covers: {', '.join(titles)}.\n" if titles else "",
             history_line=(
                 f"Already posted recently, do not repeat: {', '.join(recent_topics)}.\n"

@@ -1,16 +1,16 @@
 import json
 from pathlib import Path
 
-from agency.brand import BrandProfile
-
 _MAX_HISTORY = 200
 
 
 class TopicHistory:
-    """Tracks recently used topics per brand so scheduled runs don't repeat themselves."""
+    """Tracks recently used topics per customer/brand/project so scheduled runs don't repeat."""
 
-    def __init__(self, state_root: str | Path, brand: BrandProfile):
-        self._path = Path(state_root) / brand.slug / "topic_history.json"
+    def __init__(self, state_root: str | Path, customer_slug: str, brand_slug: str, project_slug: str | None):
+        self._path = (
+            Path(state_root) / customer_slug / brand_slug / (project_slug or "_default") / "topic_history.json"
+        )
 
     def recent(self, limit: int = 20) -> list[str]:
         if not self._path.exists():

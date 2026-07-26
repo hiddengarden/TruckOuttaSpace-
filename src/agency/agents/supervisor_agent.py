@@ -2,8 +2,8 @@ import json
 
 from pydantic import BaseModel
 
-from agency.brand import BrandProfile
 from agency.inference.provider import LLMProvider
+from agency.org import BrandContext
 
 
 class Verdict(BaseModel):
@@ -30,7 +30,7 @@ class SupervisorAgent:
     def __init__(self, provider: LLMProvider):
         self._provider = provider
 
-    def review(self, brand: BrandProfile, draft: str) -> Verdict:
+    def review(self, brand: BrandContext, draft: str) -> Verdict:
         system = _SYSTEM_TEMPLATE.format(
             name=brand.name,
             guidelines="\n".join(f"- {g}" for g in brand.guidelines),

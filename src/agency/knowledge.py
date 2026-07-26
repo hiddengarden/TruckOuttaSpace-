@@ -3,8 +3,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from agency.brand import BrandProfile
-
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -25,12 +23,12 @@ class KnowledgeBase:
     similarity search is a roadmap item, not a blocker for the slice.
     """
 
-    def __init__(self, brand: BrandProfile, knowledge_root: Path | str):
+    def __init__(self, customer_slug: str, brand_slug: str, knowledge_root: Path | str):
         self._root = Path(knowledge_root)
-        self._manifest = self._load_manifest(brand)
+        self._manifest = self._load_manifest(customer_slug, brand_slug)
 
-    def _load_manifest(self, brand: BrandProfile) -> list[dict]:
-        path = self._root / brand.slug / "manifest.json"
+    def _load_manifest(self, customer_slug: str, brand_slug: str) -> list[dict]:
+        path = self._root / customer_slug / brand_slug / "manifest.json"
         if not path.exists():
             return []
         return json.loads(path.read_text())

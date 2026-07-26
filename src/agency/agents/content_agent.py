@@ -1,6 +1,6 @@
-from agency.brand import BrandProfile
 from agency.inference.provider import LLMProvider
 from agency.knowledge import KnowledgeBase
+from agency.org import BrandContext
 
 
 class ContentAgent:
@@ -9,7 +9,7 @@ class ContentAgent:
     def __init__(self, provider: LLMProvider):
         self._provider = provider
 
-    def draft(self, brand: BrandProfile, topic: str, knowledge_base: KnowledgeBase | None = None) -> str:
+    def draft(self, brand: BrandContext, topic: str, knowledge_base: KnowledgeBase | None = None) -> str:
         knowledge_section = ""
         if knowledge_base is not None:
             context = knowledge_base.context_block(topic)

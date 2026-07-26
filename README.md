@@ -10,40 +10,55 @@ instance.
   separate service (deployed however you like, e.g. rootless Podman/Quadlet)
   and this codebase only talks to its `/public/v1` REST API. Upgrading Postiz
   is just bumping a container tag, with no merge conflicts against upstream.
-- **Brand profiles map onto Postiz's native "groups" (customers).** Postiz
-  already supports multiple clients/customers per instance, each with their
-  own scoped social channels (`GET /public/v1/groups`,
-  `GET /public/v1/integrations?group=<id>`). A brand profile here
-  (`brands/*.yaml`) just records which group + integration IDs it owns,
-  instead of reinventing multi-tenancy.
+- **Org hierarchy: Agency → Customer → Brand → Project.** One YAML file per
+  customer (`org/<customer-slug>.yaml`) holds that customer's brands, each
+  with its own Postiz group/integration IDs, voice, and guidelines. A brand's
+  `projects` are a sub-brand layer -- campaigns, themes, initiatives, series --
+  that inherit the brand's voice but can layer on extra guidelines/banned
+  topics and their own topic focus. Brand-level `postiz_group_id` maps onto
+  Postiz's native "customer/group" concept (`GET /public/v1/groups`), so
+  multi-client scoping isn't reinvented.
 - **Inference is local-first.** `agency.inference.LocalFirstProvider` tries a
   local OpenAI-compatible endpoint (Ollama by default) and falls back to
   OpenRouter (or any other OpenAI-compatible API) only on a connection
   failure or timeout. Swapping providers is a `.env` change.
-- **Four agent roles:**
+- **Orchestration is LangGraph, not hand-rolled control flow.** A single
+  post's lifecycle (draft → supervise → revise-loop → escalate → publish) is
+  a `StateGraph` (`agency/graph.py`), compiled with a checkpointer
+  (SQLite in production, in-memory in tests). That buys two things a plain
+  function chain doesn't: every run is keyed by a `thread_id` and durable
+  across process restarts, and a stuck/rejected draft can call `interrupt()`
+  to pause -- for hours or days -- and later be resumed from a completely
+  separate CLI invocation via `Command(resume=...)`. This is deliberately
+  the *only* place a framework was adopted: the org data model and the
+  Postiz/ComfyUI/knowledge-scraping clients stay plain Python, since no
+  framework does that part for you anyway.
+- **Four agent roles so far:**
   - `KnowledgeAgent` scrapes brand-approved URLs into a per-brand corpus of
-    markdown pages + downloaded images under `knowledge/<brand-slug>/`
-    (checks `robots.txt` before every fetch; caps images per page and image
-    size). One corpus per brand, kept separate from the code.
+    markdown pages + downloaded images under
+    `knowledge/<customer-slug>/<brand-slug>/` (checks `robots.txt` before
+    every fetch; caps images per page and image size).
   - `TopicAgent` proposes what to post about, grounded in that brand's
-    knowledge base titles and aware of recently-used topics (tracked in
-    `state/<brand-slug>/topic_history.json`) so a scheduled run doesn't
-    repeat itself.
-  - `ContentAgent` drafts copy in the brand's voice, grounded in the
-    corpus: it pulls the top keyword-matching pages via `KnowledgeBase`
-    (lexical overlap for the MVP, no embeddings yet) and includes them as
-    context so it isn't inventing facts about the brand.
+    knowledge base titles, aware of recently-used topics (tracked in
+    `state/<customer>/<brand>/<project-or-_default>/topic_history.json`),
+    and aware of a project's `topic_hint` (its campaign focus) when set.
+  - `ContentAgent` drafts copy in the brand's voice, grounded in the corpus
+    via `KnowledgeBase` (lexical keyword overlap for the MVP, no embeddings
+    yet).
   - `SupervisorAgent` reviews every draft against the brand's
-    guidelines/banned topics before anything is sent to Postiz.
-  - Posts are created with `type: draft` by default, so Postiz's own UI
-    remains the last human checkpoint before anything actually goes live on
-    a social platform.
-- **Multi-brand batch + scheduling.** `agency run-all` processes every
-  `brands/*.yaml` file in one pass: re-ingest each brand's
-  `knowledge_sources`, propose `posts_per_run` topics, draft, supervise, and
-  publish. `agency loop` runs that on a repeating in-process interval; for a
-  production host, `deploy/systemd/agency-run-all.{service,timer}` runs the
-  same command as a systemd user timer instead of a long-lived process.
+    guidelines/banned topics, with up to one revision round before the
+    graph escalates instead of silently giving up.
+- **Escalation replaces "Director" as a role, not an LLM.** When the
+  supervisor can't approve a draft (no revision offered, or revisions
+  exhausted), the graph's `escalate` node interrupts and the run sits in
+  `agency review` until a human calls `agency resume`. That routing logic is
+  plain Python -- no LLM call needed to decide "ask a human."
+- **Multi-brand/customer batch + scheduling.** `agency run-all` walks every
+  `org/*.yaml` customer, every brand, every project (or the brand itself if
+  it has none): re-ingest `knowledge_sources`, propose topics, run the graph
+  per topic. `agency loop` repeats that on an interval; on a systemd-managed
+  host, `deploy/systemd/agency-run-all.{service,timer}` does the same as a
+  timer instead of a long-lived process.
 
 ## Setup
 
@@ -60,13 +75,13 @@ Fill in `.env`:
 - `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` — fallback if the local endpoint
   is unreachable.
 
-Create a brand profile from the template:
+Create a customer file from the template:
 
 ```bash
-cp brands/example_brand.yaml brands/my_brand.yaml
+cp org/example_customer.yaml org/my_customer.yaml
 ```
 
-Fill in `postiz_group_id` and `integration_ids` using:
+Fill in each brand's `postiz_group_id` and `integration_ids` using:
 
 ```bash
 curl -H "Authorization: $POSTIZ_API_KEY" "$POSTIZ_BASE_URL/public/v1/groups"
@@ -74,41 +89,57 @@ curl -H "Authorization: $POSTIZ_API_KEY" "$POSTIZ_BASE_URL/public/v1/integration
 ```
 
 Also fill in `knowledge_sources` (URLs to re-scrape on every scheduled run)
-and `posts_per_run` (how many posts to propose/draft per brand per run).
+and `posts_per_run`. Add a `projects:` entry per brand for any campaign/theme
+that should get its own topic focus and rotation.
 
 ## Run the vertical slice
 
-Build the brand's knowledge base first (repeatable -- re-ingesting a URL
+Build a brand's knowledge base first (repeatable -- re-ingesting a URL
 replaces its old entry):
 
 ```bash
-python -m agency.cli ingest --brand brands/my_brand.yaml \
+python -m agency.cli ingest --org org/my_customer.yaml --brand my-brand \
   --url https://mybrand.com/about \
   --url https://mybrand.com/products/flagship
 ```
 
-This writes `knowledge/<brand-slug>/pages/*.md` (with source-url/title/
-fetched-at front matter) and `knowledge/<brand-slug>/assets/*/img-N.*`.
+This writes `knowledge/<customer-slug>/<brand-slug>/pages/*.md` (with
+source-url/title/fetched-at front matter) and
+`knowledge/<customer-slug>/<brand-slug>/assets/*/img-N.*`.
 
-Then draft:
+Then draft one post (add `--project <slug>` to draft under a specific
+campaign/theme):
 
 ```bash
-python -m agency.cli draft --brand brands/my_brand.yaml --topic "our new fall collection"
+python -m agency.cli draft --org org/my_customer.yaml --brand my-brand \
+  --topic "our new fall collection"
 ```
 
 This grounds the draft in whatever knowledge base content matches the topic,
-runs the draft through the supervisor (with up to one revision round), and —
-only if approved — creates a `draft` post in Postiz via the API. Add
-`--dry-run` to skip the Postiz call entirely, or `--publish now` /
-`--publish schedule` once you're ready to go live.
+runs it through the supervisor (with up to one revision round), and either
+creates a `draft` post in Postiz, or — if the supervisor never approves —
+prints a thread id and exits with status 2 so you know to check `agency
+review`. Add `--dry-run` to skip the Postiz call entirely, or `--publish now`
+/ `--publish schedule` once you're ready to go live.
 
-## Running the whole agency (multiple brands, on a schedule)
+## Human review queue
 
-Every brand under `brands/*.yaml` in one pass, with topics chosen by the
-`TopicAgent` instead of a human passing `--topic`:
+Any draft the supervisor can't approve pauses instead of silently failing:
 
 ```bash
-python -m agency.cli run-all              # one pass over every brand
+python -m agency.cli review                                  # list what's pending
+python -m agency.cli resume --thread-id <id> --approve        # publish as-is
+python -m agency.cli resume --thread-id <id> --approve --text "edited copy"
+python -m agency.cli resume --thread-id <id> --reject --reason "off brand"
+```
+
+Because the graph state is checkpointed to SQLite, `resume` can run in a
+completely separate process, days after `run-all` created the escalation.
+
+## Running the whole agency (multiple customers/brands, on a schedule)
+
+```bash
+python -m agency.cli run-all              # one pass over every org/*.yaml customer
 python -m agency.cli run-all --dry-run    # same, but never calls Postiz
 ```
 
@@ -144,16 +175,26 @@ daily -- edit to taste.
 python -m pytest
 ```
 
-Postiz and LLM calls are mocked (`respx`, fakes) — no live Postiz instance or
+Postiz and LLM calls are mocked (`respx`, fakes); LangGraph checkpointing
+uses `MemorySaver` instead of the SQLite backend. No live Postiz instance or
 model runner is required to run the suite.
 
 ## Roadmap (not yet built)
 
+- Creative layer: `Designer` (creative QC / brand-voice gate), `Artist` and
+  `VideoMaster` (image/video generation via a local ComfyUI instance --
+  its REST API is already verified: `POST /prompt`, `GET /history/{id}`,
+  `GET /view`), a music/SFX agent, `GhostWriter` (long-form content), and
+  `StudioWorker` (assembling the asset bank into shorts/reels/video).
+- `Secretary` (per customer: deadlines, platform compliance, paperwork,
+  bookkeeping) and `DevOps` (backups, operational security, pipeline health)
+  as plain Python graph nodes -- deliberately not LLM agents, per the
+  orchestration-framework research that shaped this design.
+- An `R&D` node that can suggest better open-source tooling -- real value
+  here needs a search-capable backend, which isn't wired up yet.
 - Feedback loop from Postiz analytics (`GET /public/v1/analytics/:integration`)
   back into the content agent's and topic agent's prompts.
-- Embedding-based retrieval in `KnowledgeBase` (e.g. via Ollama's embeddings
-  endpoint) instead of keyword overlap, once corpora get large.
-- Per-brand run cadence/calendar (right now every brand in `brands/` gets
-  the same interval from `loop`/the systemd timer).
-- Human-in-the-loop approval queue as an alternative to trusting the
-  `SupervisorAgent` alone before Postiz drafts are created.
+- Embedding-based retrieval in `KnowledgeBase` instead of keyword overlap,
+  once corpora get large.
+- Per-brand/project run cadence (right now every customer in `org/` gets the
+  same interval from `loop`/the systemd timer).

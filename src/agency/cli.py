@@ -1,27 +1,40 @@
 import argparse
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
+
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from agency.agents.content_agent import ContentAgent
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
 from agency.agents.supervisor_agent import SupervisorAgent
 from agency.agents.topic_agent import TopicAgent
-from agency.batch import run_all
-from agency.brand import BrandProfile, load_brand
 from agency.config import Settings
+from agency.escalations import EscalationRegistry
+from agency.graph import build_post_graph, initial_post_state
 from agency.inference.provider import default_provider
 from agency.knowledge import KnowledgeBase
-from agency.pipeline import run_pipeline
+from agency.org import brand_context, discover_customers, find_brand, find_project, load_customer
 from agency.postiz.client import PostizClient
+from agency.run import resume_escalation, run_all
 
 
-def _run_ingest(brand: BrandProfile, urls: list[str], settings: Settings) -> None:
+@contextmanager
+def _checkpointer(settings: Settings):
+    Path(settings.checkpoint_db_path).parent.mkdir(parents=True, exist_ok=True)
+    with SqliteSaver.from_conn_string(settings.checkpoint_db_path) as saver:
+        yield saver
+
+
+def _run_ingest(args: argparse.Namespace, settings: Settings) -> None:
+    customer = load_customer(args.org)
+    brand = find_brand(customer, args.brand)
     agent = KnowledgeAgent(settings.knowledge_root)
     try:
-        for url in urls:
+        for url in args.urls:
             try:
-                doc = agent.ingest_url(brand, url)
+                doc = agent.ingest_url(customer.slug, brand.slug, url)
                 print(f"ingested {url} -> {doc.markdown_path} ({len(doc.asset_paths)} assets)")
             except RobotsDisallowed as exc:
                 print(f"skipped {url}: {exc}", file=sys.stderr)
@@ -29,73 +42,82 @@ def _run_ingest(brand: BrandProfile, urls: list[str], settings: Settings) -> Non
         agent.close()
 
 
-def _run_draft(brand: BrandProfile, args: argparse.Namespace, settings: Settings) -> None:
+def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
+    customer = load_customer(args.org)
+    brand = find_brand(customer, args.brand)
+    project = find_project(brand, args.project) if args.project else None
+    ctx = brand_context(brand, project)
+
     provider = default_provider(settings)
-    knowledge_base = KnowledgeBase(brand, settings.knowledge_root)
+    knowledge_base = KnowledgeBase(customer.slug, brand.slug, settings.knowledge_root)
+    postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
 
-    postiz_client = None
-    if not args.dry_run:
-        postiz_client = PostizClient(settings.postiz_base_url, settings.postiz_api_key)
+    with _checkpointer(settings) as checkpointer:
+        graph = build_post_graph(
+            ContentAgent(provider), SupervisorAgent(provider), postiz_client, knowledge_base
+        ).compile(checkpointer=checkpointer)
 
-    result = run_pipeline(
-        brand=brand,
-        topic=args.topic,
-        content_agent=ContentAgent(provider),
-        supervisor_agent=SupervisorAgent(provider),
-        postiz_client=postiz_client,
-        post_type=args.publish,
-        knowledge_base=knowledge_base,
-    )
+        thread_id = f"{customer.slug}:{brand.slug}:{project.slug if project else '_default'}:cli"
+        state = initial_post_state(ctx, args.topic, brand.integration_ids, brand.postiz_group_id, args.publish)
+        output = graph.invoke(state, {"configurable": {"thread_id": thread_id}})
 
-    print("--- Final text ---")
-    print(result.final_text)
+    print("--- Draft ---")
+    print(output.get("draft", ""))
     print("\n--- Supervisor verdicts ---")
-    for i, verdict in enumerate(result.verdicts, 1):
-        print(f"[{i}] approved={verdict.approved} reason={verdict.reason}")
+    for i, verdict in enumerate(output.get("verdicts", []), 1):
+        print(f"[{i}] approved={verdict['approved']} reason={verdict['reason']}")
 
-    if not result.approved:
-        print("\nNot approved by supervisor; nothing sent to Postiz.", file=sys.stderr)
+    if "__interrupt__" in output:
+        print(f"\nEscalated for human review. Resume with: agency resume --thread-id {thread_id}", file=sys.stderr)
+        sys.exit(2)
+    if not output.get("approved"):
+        print("\nRejected; nothing sent to Postiz.", file=sys.stderr)
         sys.exit(1)
-
-    if result.postiz_response is not None:
+    if output.get("postiz_response") is not None:
         print("\n--- Postiz response ---")
-        print(result.postiz_response)
+        print(output["postiz_response"])
 
 
 def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
-    brands_dir = Path(args.brands_dir or settings.brands_dir)
-    brand_paths = sorted(brands_dir.glob("*.yaml"))
-    if not brand_paths:
-        print(f"No brand files found in {brands_dir}", file=sys.stderr)
+    org_dir = Path(args.org_dir or settings.org_dir)
+    customers = discover_customers(org_dir)
+    if not customers:
+        print(f"No customer files found in {org_dir}", file=sys.stderr)
         return
 
     provider = default_provider(settings)
     knowledge_agent = KnowledgeAgent(settings.knowledge_root)
     postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
+    escalations = EscalationRegistry(settings.state_root)
 
     try:
-        results = run_all(
-            brand_paths,
-            settings.knowledge_root,
-            settings.state_root,
-            knowledge_agent,
-            TopicAgent(provider),
-            ContentAgent(provider),
-            SupervisorAgent(provider),
-            postiz_client,
-        )
+        with _checkpointer(settings) as checkpointer:
+            results = run_all(
+                customers,
+                settings.knowledge_root,
+                settings.state_root,
+                checkpointer,
+                knowledge_agent,
+                TopicAgent(provider),
+                ContentAgent(provider),
+                SupervisorAgent(provider),
+                postiz_client,
+                escalations,
+            )
     finally:
         knowledge_agent.close()
         if postiz_client is not None:
             postiz_client.close()
 
     for result in results:
-        print(f"=== {result.brand_slug} ===")
+        label = f"{result.customer_slug}/{result.brand_slug}"
+        if result.project_slug:
+            label += f"/{result.project_slug}"
+        print(f"=== {label} ===")
         for error in result.ingest_errors:
             print(f"  ingest error: {error}", file=sys.stderr)
-        for topic, pipeline_result in zip(result.topics, result.pipeline_results):
-            status = "published" if pipeline_result.approved else "rejected"
-            print(f"  [{status}] {topic}")
+        for outcome in result.outcomes:
+            print(f"  [{outcome.status}] {outcome.topic} (thread {outcome.thread_id})")
 
 
 def _run_loop(args: argparse.Namespace, settings: Settings) -> None:
@@ -108,16 +130,63 @@ def _run_loop(args: argparse.Namespace, settings: Settings) -> None:
         time.sleep(interval)
 
 
+def _run_review(settings: Settings) -> None:
+    escalations = EscalationRegistry(settings.state_root)
+    pending = escalations.list()
+    if not pending:
+        print("No pending escalations.")
+        return
+    for entry in pending:
+        print(f"--- {entry['thread_id']} ---")
+        print(f"  {entry['customer']}/{entry['brand']}" + (f"/{entry['project']}" if entry.get("project") else ""))
+        print(f"  topic: {entry['topic']}")
+        print(f"  reason: {entry['reason']}")
+        print(f"  draft: {entry['draft']}")
+
+
+def _run_resume(args: argparse.Namespace, settings: Settings) -> None:
+    escalations = EscalationRegistry(settings.state_root)
+    entry = escalations.get(args.thread_id)
+    if entry is None:
+        print(f"No pending escalation with thread id {args.thread_id}", file=sys.stderr)
+        sys.exit(1)
+
+    provider = default_provider(settings)
+    postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
+
+    with _checkpointer(settings) as checkpointer:
+        output = resume_escalation(
+            checkpointer,
+            escalations,
+            ContentAgent(provider),
+            SupervisorAgent(provider),
+            postiz_client,
+            args.thread_id,
+            approved=args.approve,
+            text=args.text,
+            reason=args.reason,
+        )
+
+    if output.get("postiz_response") is not None:
+        print("--- Postiz response ---")
+        print(output["postiz_response"])
+    else:
+        print(f"Resumed {args.thread_id}: approved={output.get('approved')}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agency")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     ingest_parser = subparsers.add_parser("ingest", help="Scrape URLs into a brand's knowledge base")
-    ingest_parser.add_argument("--brand", required=True, help="Path to a brand profile YAML file")
+    ingest_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
+    ingest_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
     ingest_parser.add_argument("--url", action="append", required=True, dest="urls")
 
     draft_parser = subparsers.add_parser("draft", help="Draft, supervise, and optionally publish one post")
-    draft_parser.add_argument("--brand", required=True, help="Path to a brand profile YAML file")
+    draft_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
+    draft_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
+    draft_parser.add_argument("--project", default=None, help="Optional project slug within that brand")
     draft_parser.add_argument("--topic", required=True, help="What the post should be about")
     draft_parser.add_argument(
         "--publish",
@@ -126,37 +195,50 @@ def main() -> None:
         help="Postiz post type to create once approved (default: draft, i.e. nothing goes live)",
     )
     draft_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Run the content + supervisor agents but never call the Postiz API",
+        "--dry-run", action="store_true", help="Run the agents but never call the Postiz API"
     )
 
     run_all_parser = subparsers.add_parser(
-        "run-all", help="Ingest + propose topics + draft + supervise + publish for every brand"
+        "run-all", help="Ingest + propose topics + draft + supervise + publish for every customer/brand/project"
     )
     run_all_parser.add_argument(
-        "--brands-dir", default=None, help="Directory of brand YAML files (default: BRANDS_DIR env / ./brands)"
+        "--org-dir", default=None, help="Directory of customer YAML files (default: ORG_DIR env / ./org)"
     )
     run_all_parser.add_argument("--dry-run", action="store_true")
 
     loop_parser = subparsers.add_parser("loop", help="Run `run-all` repeatedly forever, sleeping between cycles")
-    loop_parser.add_argument("--brands-dir", default=None)
+    loop_parser.add_argument("--org-dir", default=None)
     loop_parser.add_argument("--dry-run", action="store_true")
     loop_parser.add_argument(
         "--interval-seconds", type=int, default=None, help="Default: RUN_INTERVAL_SECONDS env / 21600 (6h)"
     )
 
+    subparsers.add_parser("review", help="List posts escalated for human review")
+
+    resume_parser = subparsers.add_parser("resume", help="Approve or reject a post escalated for human review")
+    resume_parser.add_argument("--thread-id", required=True)
+    group = resume_parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--approve", action="store_true")
+    group.add_argument("--reject", dest="approve", action="store_false")
+    resume_parser.add_argument("--text", default=None, help="Replacement text to publish (only with --approve)")
+    resume_parser.add_argument("--reason", default=None, help="Why it was rejected (only with --reject)")
+    resume_parser.add_argument("--dry-run", action="store_true")
+
     args = parser.parse_args()
     settings = Settings.from_env()
 
     if args.command == "ingest":
-        _run_ingest(load_brand(args.brand), args.urls, settings)
+        _run_ingest(args, settings)
     elif args.command == "draft":
-        _run_draft(load_brand(args.brand), args, settings)
+        _run_draft(args, settings)
     elif args.command == "run-all":
         _run_batch(args, settings)
     elif args.command == "loop":
         _run_loop(args, settings)
+    elif args.command == "review":
+        _run_review(settings)
+    elif args.command == "resume":
+        _run_resume(args, settings)
 
 
 if __name__ == "__main__":

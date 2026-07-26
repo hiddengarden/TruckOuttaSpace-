@@ -10,8 +10,6 @@ import httpx
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
-from agency.brand import BrandProfile
-
 MAX_IMAGES_PER_PAGE = 5
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 USER_AGENT = "agency-knowledge-bot/0.1 (+brand knowledge base builder)"
@@ -42,7 +40,7 @@ class KnowledgeDoc:
 class KnowledgeAgent:
     """Scrapes brand-approved URLs into a per-brand markdown + image corpus.
 
-    One corpus per brand under `<knowledge_root>/<brand.slug>/`:
+    One corpus per brand under `<knowledge_root>/<customer_slug>/<brand_slug>/`:
       pages/<slug>.md          -- markdown with a small YAML-ish front matter
       assets/<slug>/img-N.ext  -- images found in that page's main content
       manifest.json            -- list of KnowledgeDoc records
@@ -54,7 +52,7 @@ class KnowledgeAgent:
             headers={"User-Agent": USER_AGENT}, timeout=20.0, follow_redirects=True
         )
 
-    def ingest_url(self, brand: BrandProfile, url: str) -> KnowledgeDoc:
+    def ingest_url(self, customer_slug: str, brand_slug: str, url: str) -> KnowledgeDoc:
         self._check_robots(url)
 
         response = self._client.get(url)
@@ -67,7 +65,7 @@ class KnowledgeAgent:
 
         slug = _slugify(title) or _slugify(url)
         fetched_at = datetime.now(timezone.utc).isoformat()
-        brand_dir = self._root / brand.slug
+        brand_dir = self._root / customer_slug / brand_slug
 
         pages_dir = brand_dir / "pages"
         pages_dir.mkdir(parents=True, exist_ok=True)
@@ -86,7 +84,7 @@ class KnowledgeAgent:
             asset_paths=[str(p.relative_to(self._root)) for p in asset_paths],
             fetched_at=fetched_at,
         )
-        self._upsert_manifest(brand, doc)
+        self._upsert_manifest(brand_dir, doc)
         return doc
 
     def _check_robots(self, url: str) -> None:
@@ -125,11 +123,8 @@ class KnowledgeAgent:
             saved.append(path)
         return saved
 
-    def _manifest_path(self, brand: BrandProfile) -> Path:
-        return self._root / brand.slug / "manifest.json"
-
-    def _upsert_manifest(self, brand: BrandProfile, doc: KnowledgeDoc) -> None:
-        path = self._manifest_path(brand)
+    def _upsert_manifest(self, brand_dir: Path, doc: KnowledgeDoc) -> None:
+        path = brand_dir / "manifest.json"
         manifest = json.loads(path.read_text()) if path.exists() else []
         manifest = [entry for entry in manifest if entry["id"] != doc.id]
         manifest.append(doc.__dict__)
