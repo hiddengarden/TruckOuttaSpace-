@@ -78,6 +78,25 @@ def test_check_platform_compliance_without_postiz_client_returns_empty():
     assert secretary.check_platform_compliance(customer) == []
 
 
+class RaisingPostizClient:
+    def list_integrations(self, group=None):
+        import httpx
+
+        raise httpx.ConnectError("connection refused")
+
+
+def test_check_platform_compliance_surfaces_unreachable_postiz_as_a_finding_instead_of_raising():
+    customer = Customer(slug="acme", name="Acme", brands=[_brand_with_projects([])])
+    secretary = Secretary(postiz_client=RaisingPostizClient())
+
+    findings = secretary.check_platform_compliance(customer)
+
+    assert len(findings) == 1
+    assert findings[0].severity == "warning"
+    assert "widgets" == findings[0].brand_slug
+    assert "connection refused" in findings[0].message
+
+
 def test_run_all_checks_combines_builtin_and_extra_checks():
     customer = Customer(slug="acme", name="Acme", brands=[_brand_with_projects([])])
 

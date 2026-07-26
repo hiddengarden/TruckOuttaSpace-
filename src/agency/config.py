@@ -26,6 +26,15 @@ class Settings:
     audio_workflows_dir: str
     assets_root: str
     content_root: str
+    telegram_bot_token: str
+    telegram_chat_id: str
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    smtp_from_addr: str
+    smtp_to_addr: str
+    smtp_use_tls: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -48,4 +57,13 @@ class Settings:
             audio_workflows_dir=os.environ.get("AUDIO_WORKFLOWS_DIR", "./workflows/audio"),
             assets_root=os.environ.get("ASSETS_ROOT", "./assets"),
             content_root=os.environ.get("CONTENT_ROOT", "./content"),
+            telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
+            smtp_host=os.environ.get("SMTP_HOST", ""),
+            smtp_port=int(os.environ.get("SMTP_PORT", "587")),
+            smtp_username=os.environ.get("SMTP_USERNAME", ""),
+            smtp_password=os.environ.get("SMTP_PASSWORD", ""),
+            smtp_from_addr=os.environ.get("SMTP_FROM_ADDR", ""),
+            smtp_to_addr=os.environ.get("SMTP_TO_ADDR", ""),
+            smtp_use_tls=os.environ.get("SMTP_USE_TLS", "true").lower() not in ("false", "0", "no"),
         )

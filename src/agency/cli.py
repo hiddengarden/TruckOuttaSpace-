@@ -2,7 +2,9 @@ import argparse
 import os
 import sys
 import time
+from collections import Counter
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -11,6 +13,7 @@ from agency.agents.artist import Artist
 from agency.agents.content_agent import ContentAgent
 from agency.agents.designer import Designer
 from agency.agents.devops import DevOps
+from agency.agents.director import Director
 from agency.agents.ghost_writer import GhostWriter, render_publication_markdown, slugify
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
 from agency.agents.music_agent import MusicAgent
@@ -21,12 +24,16 @@ from agency.agents.supervisor_agent import SupervisorAgent
 from agency.agents.topic_agent import TopicAgent
 from agency.agents.video_master import VideoMaster
 from agency.comfyui.client import ComfyUIClient
+from agency.comfyui.workflow import validate_workflow_mapping
 from agency.config import Settings
 from agency.escalations import EscalationRegistry
 from agency.graph import build_compose_graph, build_finalize_graph, initial_compose_state, initial_finalize_input
 from agency.inference.provider import LocalInferenceUnavailable, default_provider
 from agency.knowledge import KnowledgeBase
 from agency.ledger import RunLedger
+from agency.notifications.email_notifier import EmailTicketNotifier
+from agency.notifications.telegram import TelegramNotifier
+from agency.notifications.tickets import TicketRegistry
 from agency.org import brand_context, discover_customers, find_brand, find_project, load_customer
 from agency.postiz.client import PostizClient
 from agency.run import resume_escalation, run_all
@@ -39,6 +46,29 @@ def _checkpointer(settings: Settings):
     Path(settings.checkpoint_db_path).parent.mkdir(parents=True, exist_ok=True)
     with SqliteSaver.from_conn_string(settings.checkpoint_db_path) as saver:
         yield saver
+
+
+def _director_from_settings(settings: Settings) -> Director:
+    """Both channels are optional and independently configured: Telegram
+    needs a bot token + chat id (BotFather issues the token), email tickets
+    need an SMTP host. Either or both missing degrades to a safe no-op, not
+    a crash -- notifications are an enhancement, not a hard dependency."""
+    telegram = None
+    if settings.telegram_bot_token and settings.telegram_chat_id:
+        telegram = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
+
+    tickets, email = None, None
+    if settings.smtp_host:
+        tickets = TicketRegistry(settings.state_root)
+        email = EmailTicketNotifier(
+            settings.smtp_host, settings.smtp_port, settings.smtp_username, settings.smtp_password,
+            settings.smtp_from_addr, settings.smtp_to_addr, use_tls=settings.smtp_use_tls,
+        )
+    return Director(telegram=telegram, tickets=tickets, email=email)
+
+
+def _ledger(settings: Settings, director: Director) -> RunLedger:
+    return RunLedger(settings.state_root, on_event=director.handle_ledger_event)
 
 
 def _provider_for_brand(settings: Settings, ledger: RunLedger, brand_slug: str, allow_cloud_fallback: bool):
@@ -82,7 +112,8 @@ def _run_illustrate(args: argparse.Namespace, settings: Settings) -> None:
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
-    ledger = RunLedger(settings.state_root)
+    director = _director_from_settings(settings)
+    ledger = _ledger(settings, director)
 
     try:
         provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
@@ -120,7 +151,8 @@ def _run_animate(args: argparse.Namespace, settings: Settings) -> None:
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
-    ledger = RunLedger(settings.state_root)
+    director = _director_from_settings(settings)
+    ledger = _ledger(settings, director)
 
     try:
         provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
@@ -146,7 +178,8 @@ def _run_write_publication(args: argparse.Namespace, settings: Settings) -> None
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
-    ledger = RunLedger(settings.state_root)
+    director = _director_from_settings(settings)
+    ledger = _ledger(settings, director)
 
     try:
         provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
@@ -194,7 +227,8 @@ def _run_compose(args: argparse.Namespace, settings: Settings) -> None:
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
-    ledger = RunLedger(settings.state_root)
+    director = _director_from_settings(settings)
+    ledger = _ledger(settings, director)
 
     try:
         provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
@@ -217,7 +251,8 @@ def _run_assemble(args: argparse.Namespace, settings: Settings) -> None:
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
-    ledger = RunLedger(settings.state_root)
+    director = _director_from_settings(settings)
+    ledger = _ledger(settings, director)
 
     images_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
     image_paths = [Path(p) for p in args.image] if args.image else sorted(images_dir.glob("*.png")) + sorted(
@@ -247,6 +282,7 @@ def _run_assemble(args: argparse.Namespace, settings: Settings) -> None:
 
 
 def _run_admin_report(args: argparse.Namespace, settings: Settings) -> None:
+    director = _director_from_settings(settings)
     customer = load_customer(args.org)
     postiz_client = PostizClient(settings.postiz_base_url, settings.postiz_api_key)
     secretary = Secretary(postiz_client=postiz_client)
@@ -260,14 +296,39 @@ def _run_admin_report(args: argparse.Namespace, settings: Settings) -> None:
     for finding in findings:
         label = finding.brand_slug + (f"/{finding.project_slug}" if finding.project_slug else "")
         print(f"[{finding.severity}] {label}: {finding.message}")
+        if finding.severity in ("warning", "overdue"):
+            director.open_ticket(
+                dedup_key=f"secretary:{customer.slug}:{label}:{finding.category}",
+                category=finding.category,
+                severity="critical" if finding.severity == "overdue" else "warning",
+                summary=f"{label}: {finding.message}",
+                detail={"customer": customer.slug, "brand": finding.brand_slug, "project": finding.project_slug},
+            )
 
 
 def _run_devops_health(settings: Settings) -> None:
+    director = _director_from_settings(settings)
     devops = DevOps(settings)
     for result in devops.check_service_health():
         print(f"{result.name}: {'OK' if result.ok else 'DOWN'} ({result.detail})")
+        if not result.ok:
+            director.open_ticket(
+                dedup_key=f"devops:service:{result.name}",
+                category="service-health",
+                severity="critical",
+                summary=f"{result.name} unreachable",
+                detail={"service": result.name, "detail": result.detail},
+            )
     env_result = devops.check_env_file_permissions()
     print(f"env_permissions: {'OK' if env_result.ok else 'WARN'} ({env_result.detail})")
+    if not env_result.ok:
+        director.open_ticket(
+            dedup_key="devops:env_permissions",
+            category="security",
+            severity="warning",
+            summary="`.env` file is world-readable",
+            detail={"detail": env_result.detail},
+        )
 
 
 def _run_devops_backup(args: argparse.Namespace, settings: Settings) -> None:
@@ -277,7 +338,8 @@ def _run_devops_backup(args: argparse.Namespace, settings: Settings) -> None:
 
 
 def _run_devops_rnd(args: argparse.Namespace, settings: Settings) -> None:
-    ledger = RunLedger(settings.state_root)
+    director = _director_from_settings(settings)
+    ledger = _ledger(settings, director)
     devops = DevOps(settings)
     try:
         provider = default_provider(
@@ -295,7 +357,8 @@ def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
     brand = find_brand(customer, args.brand)
     project = find_project(brand, args.project) if args.project else None
     ctx = brand_context(brand, project)
-    ledger = RunLedger(settings.state_root)
+    director = _director_from_settings(settings)
+    ledger = _ledger(settings, director)
 
     provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
     knowledge_base = KnowledgeBase(customer.slug, brand.slug, settings.knowledge_root)
@@ -370,7 +433,8 @@ def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
         print(f"No customer files found in {org_dir}", file=sys.stderr)
         return
 
-    ledger = RunLedger(settings.state_root)
+    director = _director_from_settings(settings)
+    ledger = _ledger(settings, director)
     knowledge_agent = KnowledgeAgent(settings.knowledge_root)
     postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
     escalations = EscalationRegistry(settings.state_root)
@@ -431,7 +495,8 @@ def _run_loop(args: argparse.Namespace, settings: Settings) -> None:
 
 def _run_review(settings: Settings) -> None:
     escalations = EscalationRegistry(settings.state_root)
-    pending = escalations.list()
+    with _checkpointer(settings) as checkpointer:
+        pending = escalations.list_verified(checkpointer)
     if not pending:
         print("No pending escalations.")
         return
@@ -445,33 +510,42 @@ def _run_review(settings: Settings) -> None:
 
 def _run_resume(args: argparse.Namespace, settings: Settings) -> None:
     escalations = EscalationRegistry(settings.state_root)
-    entry = escalations.get(args.thread_id)
-    if entry is None:
-        print(f"No pending escalation with thread id {args.thread_id}", file=sys.stderr)
-        sys.exit(1)
-
-    customer = next(
-        (c for c in discover_customers(settings.org_dir) if c.slug == entry["customer"]), None
-    )
-    if customer is None:
-        print(f"Customer '{entry['customer']}' not found under {settings.org_dir}", file=sys.stderr)
-        sys.exit(1)
-    brand = find_brand(customer, entry["brand"])
-
-    ledger = RunLedger(settings.state_root)
+    director = _director_from_settings(settings)
+    ledger = _ledger(settings, director)
     postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
     comfyui_client = None
-    artist = None
-    image_assets_dir = None
 
     try:
-        provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
-        if args.with_image:
-            comfyui_client = ComfyUIClient(settings.comfyui_base_url)
-            artist = Artist(provider, comfyui_client, settings.workflows_dir)
-            image_assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
-
         with _checkpointer(settings) as checkpointer:
+            # Verified against the checkpoint, not just the JSON file: a
+            # thread someone already resolved directly against the graph
+            # (bypassing `agency resume`) must not be resumable a second
+            # time here.
+            entry = escalations.get_verified(args.thread_id, checkpointer)
+            if entry is None:
+                print(
+                    f"No pending escalation with thread id {args.thread_id} "
+                    "(already resolved, or never escalated)",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            customer = next(
+                (c for c in discover_customers(settings.org_dir) if c.slug == entry["customer"]), None
+            )
+            if customer is None:
+                print(f"Customer '{entry['customer']}' not found under {settings.org_dir}", file=sys.stderr)
+                sys.exit(1)
+            brand = find_brand(customer, entry["brand"])
+
+            provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
+            artist = None
+            image_assets_dir = None
+            if args.with_image:
+                comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+                artist = Artist(provider, comfyui_client, settings.workflows_dir)
+                image_assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
+
             output = resume_escalation(
                 checkpointer, escalations, ContentAgent(provider), SupervisorAgent(provider),
                 args.thread_id, approved=args.approve, text=args.text, reason=args.reason,
@@ -501,6 +575,115 @@ def _run_resume(args: argparse.Namespace, settings: Settings) -> None:
         print(finalize_output["postiz_response"])
     else:
         print(f"Resumed {args.thread_id}: approved, but nothing published (dry-run or no postiz_client)")
+
+
+def _run_director_daily_report(args: argparse.Namespace, settings: Settings) -> None:
+    """Reads what already happened (the run ledger) and what's still
+    outstanding (verified escalations) and pages the Director's Telegram
+    channel with a digest -- no separate tracking of its own, so it can
+    never drift from what run-all/draft actually recorded."""
+    director = _director_from_settings(settings)
+    since = datetime.now(timezone.utc) - timedelta(hours=args.since_hours)
+    entries = [e for e in RunLedger(settings.state_root).read_all() if datetime.fromisoformat(e["timestamp"]) >= since]
+    counts = Counter(e["event"] for e in entries)
+
+    escalations = EscalationRegistry(settings.state_root)
+    with _checkpointer(settings) as checkpointer:
+        pending = escalations.list_verified(checkpointer)
+
+    published = sum(1 for e in entries if e.get("event") == "finalize_done" and e.get("published"))
+    escalated = sum(1 for e in entries if e.get("event") == "compose_done" and e.get("escalated"))
+    lines = [
+        f"window: last {args.since_hours}h",
+        f"composed: {counts.get('compose_done', 0)}",
+        f"published: {published}",
+        f"escalations raised: {escalated}",
+        f"pending escalations now: {len(pending)}",
+        f"local inference unavailable: {counts.get('local_inference_unavailable', 0)}",
+        f"cloud fallback used: {counts.get('fallback_used', 0)}",
+        f"ambiguous publishes skipped: {counts.get('finalize_ambiguous_skip', 0)}",
+    ]
+    text = "\n".join(lines)
+    print(text)
+    director.daily_summary(text)
+
+
+def _run_director_monetization_report(args: argparse.Namespace, settings: Settings) -> None:
+    """No revenue/analytics integration is wired in -- Postiz's public API
+    doesn't document a verified monetization endpoint, and no accounting
+    system was specified, so this is deliberately bring-your-own: point it
+    at a file (e.g. exported from wherever you actually track revenue) or
+    pass text directly, and it gets relayed to the Director's Telegram
+    channel as-is."""
+    director = _director_from_settings(settings)
+    text = Path(args.file).read_text() if args.file else args.summary
+    print(text)
+    director.monetization_summary(text)
+
+
+def _run_preflight(settings: Settings) -> None:
+    """Sanity checks runnable before/without a real deployment: connectivity
+    to already-configured services, required config presence, workflow/
+    mapping consistency, and that org YAML actually parses -- all reusing
+    existing, already-tested building blocks rather than new fabricated
+    checks. Exits non-zero if anything looks wrong, so it's usable as a gate."""
+    ok = True
+
+    print("--- Service connectivity ---")
+    devops = DevOps(settings)
+    for result in devops.check_service_health():
+        print(f"{result.name}: {'OK' if result.ok else 'DOWN'} ({result.detail})")
+        ok = ok and result.ok
+
+    env_result = devops.check_env_file_permissions()
+    print(f"env_permissions: {'OK' if env_result.ok else 'WARN'} ({env_result.detail})")
+    ok = ok and env_result.ok
+
+    print("\n--- Required config ---")
+    postiz_key_ok = bool(settings.postiz_api_key)
+    print(f"POSTIZ_API_KEY: {'OK' if postiz_key_ok else 'MISSING'}")
+    ok = ok and postiz_key_ok
+
+    print("\n--- Notification channels (both optional) ---")
+    telegram_configured = bool(settings.telegram_bot_token and settings.telegram_chat_id)
+    print(f"telegram (Director channel): {'configured' if telegram_configured else 'not configured'}")
+    smtp_configured = bool(settings.smtp_host)
+    print(f"email ticketing (SMTP): {'configured' if smtp_configured else 'not configured'}")
+
+    print("\n--- ComfyUI workflow mappings ---")
+    for label, directory in [
+        ("image", settings.workflows_dir),
+        ("video", settings.video_workflows_dir),
+        ("audio", settings.audio_workflows_dir),
+    ]:
+        directory_path = Path(directory)
+        if not directory_path.exists():
+            print(f"{label}: {directory} does not exist (skipped)")
+            continue
+        styles = _available_styles(directory_path)
+        if not styles:
+            print(f"{label}: no workflows found under {directory}")
+            continue
+        for style in styles:
+            problems = validate_workflow_mapping(directory_path, style)
+            if problems:
+                ok = False
+                for problem in problems:
+                    print(f"{label}/{style}: {problem}")
+            else:
+                print(f"{label}/{style}: OK")
+
+    print("\n--- Org config ---")
+    try:
+        customers = discover_customers(settings.org_dir)
+        print(f"org: {len(customers)} customer file(s) parsed OK under {settings.org_dir}")
+    except Exception as exc:
+        ok = False
+        print(f"org: failed to parse customer files under {settings.org_dir}: {exc}")
+
+    print("\n" + ("PREFLIGHT OK" if ok else "PREFLIGHT FAILED"))
+    if not ok:
+        sys.exit(1)
 
 
 def main() -> None:
@@ -681,6 +864,25 @@ def main() -> None:
         help="Postiz post type once approved (default: draft)",
     )
 
+    daily_report_parser = subparsers.add_parser(
+        "director-daily-report", help="Director: digest of the run ledger + pending escalations, sent via Telegram"
+    )
+    daily_report_parser.add_argument(
+        "--since-hours", type=int, default=24, help="How far back to summarize (default: 24)"
+    )
+
+    monetization_report_parser = subparsers.add_parser(
+        "director-monetization-report",
+        help="Director: relay a monetization/revenue summary via Telegram (bring-your-own data)",
+    )
+    monetization_group = monetization_report_parser.add_mutually_exclusive_group(required=True)
+    monetization_group.add_argument("--summary", default=None, help="Summary text to send")
+    monetization_group.add_argument("--file", default=None, help="Path to a file with the summary text")
+
+    subparsers.add_parser(
+        "preflight", help="Sanity-check service connectivity, config, workflow mappings, and org files"
+    )
+
     args = parser.parse_args()
     settings = Settings.from_env()
 
@@ -714,6 +916,12 @@ def main() -> None:
         _run_review(settings)
     elif args.command == "resume":
         _run_resume(args, settings)
+    elif args.command == "director-daily-report":
+        _run_director_daily_report(args, settings)
+    elif args.command == "director-monetization-report":
+        _run_director_monetization_report(args, settings)
+    elif args.command == "preflight":
+        _run_preflight(settings)
 
 
 if __name__ == "__main__":

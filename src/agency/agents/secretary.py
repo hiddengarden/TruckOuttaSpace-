@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Callable
 
+import httpx
+
 from agency.org import Customer
 from agency.postiz.client import PostizClient
 
@@ -77,7 +79,22 @@ class Secretary:
             return []
         findings = []
         for brand in customer.brands:
-            for integration in self._postiz.list_integrations(group=brand.postiz_group_id):
+            try:
+                integrations = self._postiz.list_integrations(group=brand.postiz_group_id)
+            except httpx.HTTPError as exc:
+                # Postiz being unreachable must not take down the whole
+                # admin report -- surface it as a finding (same severity
+                # class as a disabled integration) instead of crashing.
+                findings.append(
+                    AdminFinding(
+                        severity="warning",
+                        category="platform_compliance",
+                        message=f"Could not reach Postiz to check integrations: {exc}",
+                        brand_slug=brand.slug,
+                    )
+                )
+                continue
+            for integration in integrations:
                 if integration.get("disabled"):
                     findings.append(
                         AdminFinding(

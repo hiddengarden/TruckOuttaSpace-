@@ -352,6 +352,24 @@ python -m agency.cli devops-backup --backup-dir ./backups        # tar.gz org/kn
 python -m agency.cli devops-rnd --focus "video pipeline"         # DevOps consults RnDAgent
 ```
 
+`admin-report`'s Postiz-reachability check and `devops-health`'s findings
+both open an email ticket (see Notifications below) for anything at
+`warning`/`overdue`/`down` severity, instead of only ever printing to a
+terminal nobody may be watching. A Postiz outage during `admin-report`
+surfaces as a `warning`-severity finding rather than crashing the report.
+
+```bash
+python -m agency.cli preflight
+```
+
+Sanity-checks the whole stack before you trust a scheduled run: Postiz/
+Ollama/ComfyUI reachability, `.env` permissions, `POSTIZ_API_KEY` presence,
+whether Telegram/SMTP are configured, every ComfyUI workflow's
+`.mapping.json` actually resolving against its `.json` template (catches a
+typo'd node id or renamed input before a real generation hits it), and that
+every file under `org/` parses. Exits non-zero if anything's wrong, so it
+can gate a deploy.
+
 ## Human review queue
 
 Any draft the supervisor can't approve pauses instead of silently failing:
@@ -365,6 +383,57 @@ python -m agency.cli resume --thread-id <id> --reject --reason "off brand"
 
 Because the graph state is checkpointed to SQLite, `resume` can run in a
 completely separate process, days after `run-all` created the escalation.
+
+Both commands verify against the checkpoint, not just the escalations JSON
+file: `EscalationRegistry.list_verified()`/`get_verified()` build a
+throwaway compose graph bound to the same checkpointer and check
+`get_state().next` -- an entry only counts as pending if its thread is
+still genuinely parked at the `escalate` interrupt. A thread resolved some
+other way (or a stale/corrupt entry) is pruned from the JSON file the
+moment it's looked up, instead of `review`/`resume` trusting a cache that
+could have silently drifted from what the graph engine actually knows.
+
+## Notifications: Director's Telegram channel + email ticketing
+
+Two independent, optional channels, both wired through one place
+(`Director`, `agency/agents/director.py`) so `run.py`/`graph.py` never need
+to know notifications exist:
+
+- **Telegram is the Director's channel to the human** -- low-volume,
+  high-signal only: an escalation the moment `run-all`/`loop` raises one
+  (via `RunLedger`'s `on_event` hook, since every escalation already
+  produces a `compose_done` ledger event with `escalated: true`), plus two
+  on-demand reports:
+  ```bash
+  python -m agency.cli director-daily-report                       # digest of the run ledger + pending escalations
+  python -m agency.cli director-monetization-report --summary "..."  # or --file path/to/summary.md
+  ```
+  Monetization reporting is deliberately bring-your-own: no revenue/
+  analytics integration is wired in (Postiz's public API doesn't document a
+  verified monetization endpoint, and no accounting system was specified),
+  so this relays whatever text you give it rather than fabricating a
+  computation. Schedule `director-daily-report` the same way as `run-all`
+  (cron/systemd timer) for an actual daily habit.
+- **Email tickets are the ops channel** -- everything DevOps/an on-call
+  human would want tracked but not paged for: cloud-fallback usage,
+  local-inference outages, ambiguous-publish skips (see the idempotency
+  guard above), and `admin-report`/`devops-health` findings. `TicketRegistry`
+  (`agency/notifications/tickets.py`) is a JSON index keyed by a dedup key,
+  so repeat occurrences of the same problem bump one ticket's occurrence
+  count instead of spawning a new one every run; `EmailTicketNotifier`
+  sends real SMTP (stdlib `smtplib`/`email`, any provider) with proper
+  `Message-ID`/`In-Reply-To`/`References` headers so a ticket's updates
+  thread as one conversation in any real mail client -- a lightweight,
+  self-hosted stand-in for a ticketing SaaS, not a fabricated integration
+  with a vendor that was never named.
+
+Both channels are configured independently in `.env`
+(`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`, `SMTP_HOST`/etc. -- see
+`.env.example`) and are safe no-ops when unset. A send failure on either
+channel (unreachable SMTP host, dead bot token) is caught and logged to
+stderr rather than propagating -- the same best-effort principle as
+`illustrate_node`'s ComfyUI call: a notification failing must never break
+the real work it's attached to.
 
 ## Running the whole agency (multiple customers/brands, on a schedule)
 
@@ -423,12 +492,13 @@ model runner is required to run the suite.
   also standalone, not part of `run-all`.
 - Every role from the original expanded scope now exists in some form;
   `admin-report`/`devops-*` are standalone CLI commands, not yet folded
-  into `run-all`'s scheduled cycle (e.g. an automatic weekly backup, or
-  Secretary findings surfacing alongside escalations in `agency review`).
+  into `run-all`'s scheduled cycle (e.g. an automatic weekly backup on a
+  timer, rather than only ever run by hand).
 - A search-capable backend for `RnDAgent` so it can genuinely track new
   tooling instead of relying on the model's training data alone.
-- A real notification channel for Director/Secretary/DevOps findings
-  (email, Slack, etc.) instead of CLI stdout being the only surface.
+- Monetization reporting has no real data source wired in yet --
+  `director-monetization-report` relays bring-your-own text until a real
+  revenue/analytics integration exists (see Notifications above).
 - Feedback loop from Postiz analytics (`GET /public/v1/analytics/:integration`)
   back into the content agent's and topic agent's prompts.
 - Embedding-based retrieval in `KnowledgeBase` instead of keyword overlap,

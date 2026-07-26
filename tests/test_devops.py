@@ -28,6 +28,15 @@ def _settings(**overrides) -> Settings:
         audio_workflows_dir="a",
         assets_root="assets",
         content_root="content",
+        telegram_bot_token="",
+        telegram_chat_id="",
+        smtp_host="",
+        smtp_port=587,
+        smtp_username="",
+        smtp_password="",
+        smtp_from_addr="",
+        smtp_to_addr="",
+        smtp_use_tls=True,
     )
     base.update(overrides)
     return Settings(**base)

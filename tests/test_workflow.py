@@ -1,4 +1,6 @@
-from agency.comfyui.workflow import load_workflow_spec, patch_workflow
+import json
+
+from agency.comfyui.workflow import load_workflow_spec, patch_workflow, validate_workflow_mapping
 
 
 def test_load_workflow_spec_reads_shipped_default():
@@ -27,3 +29,33 @@ def test_patch_workflow_does_not_mutate_template():
     patch_workflow(spec.template, spec.node_mapping, {"positive_prompt": "changed"})
 
     assert spec.template["6"]["inputs"]["text"] == original_text
+
+
+def test_validate_workflow_mapping_passes_for_the_shipped_default():
+    assert validate_workflow_mapping("workflows/image", "default") == []
+
+
+def test_validate_workflow_mapping_reports_missing_node_id(tmp_path):
+    (tmp_path / "broken.json").write_text(json.dumps({"6": {"class_type": "X", "inputs": {"text": ""}}}))
+    (tmp_path / "broken.mapping.json").write_text(json.dumps({"positive_prompt": "99.text"}))
+
+    problems = validate_workflow_mapping(tmp_path, "broken")
+
+    assert len(problems) == 1
+    assert "99" in problems[0]
+
+
+def test_validate_workflow_mapping_reports_missing_input_name(tmp_path):
+    (tmp_path / "broken.json").write_text(json.dumps({"6": {"class_type": "X", "inputs": {"text": ""}}}))
+    (tmp_path / "broken.mapping.json").write_text(json.dumps({"positive_prompt": "6.prompt_text"}))
+
+    problems = validate_workflow_mapping(tmp_path, "broken")
+
+    assert len(problems) == 1
+    assert "prompt_text" in problems[0]
+
+
+def test_validate_workflow_mapping_reports_missing_files():
+    problems = validate_workflow_mapping("workflows/image", "does-not-exist")
+
+    assert len(problems) == 1
