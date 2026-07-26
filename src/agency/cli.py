@@ -12,6 +12,7 @@ from agency.agents.designer import Designer
 from agency.agents.ghost_writer import GhostWriter, render_publication_markdown, slugify
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
 from agency.agents.music_agent import MusicAgent
+from agency.agents.studio_worker import StudioWorker
 from agency.agents.supervisor_agent import SupervisorAgent
 from agency.agents.topic_agent import TopicAgent
 from agency.agents.video_master import VideoMaster
@@ -161,6 +162,33 @@ def _run_compose(args: argparse.Namespace, settings: Settings) -> None:
 
     for path in saved:
         print(path)
+
+
+def _run_assemble(args: argparse.Namespace, settings: Settings) -> None:
+    customer = load_customer(args.org)
+    brand = find_brand(customer, args.brand)
+    project = find_project(brand, args.project) if args.project else None
+    ctx = brand_context(brand, project)
+
+    images_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
+    image_paths = [Path(p) for p in args.image] if args.image else sorted(images_dir.glob("*.png")) + sorted(
+        images_dir.glob("*.jpg")
+    )
+    if not image_paths:
+        print(f"No images found (pass --image or generate some into {images_dir})", file=sys.stderr)
+        sys.exit(1)
+
+    designer = None if args.no_review else Designer(default_provider(settings))
+    worker = StudioWorker(designer=designer)
+
+    output_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "videos"
+    video_path, verdict = worker.assemble_and_review(
+        ctx, args.brief, image_paths, output_dir, audio_path=args.audio, seconds_per_image=args.seconds_per_image
+    )
+
+    print(video_path)
+    if verdict is not None:
+        print(f"Designer review: approved={verdict.approved} reason={verdict.reason}", file=sys.stderr)
 
 
 def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
@@ -352,6 +380,20 @@ def main() -> None:
     )
     compose_parser.add_argument("--seed", type=int, default=None)
 
+    assemble_parser = subparsers.add_parser(
+        "assemble", help="Assemble the brand's asset bank into a short/reel via ffmpeg (StudioWorker)"
+    )
+    assemble_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
+    assemble_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
+    assemble_parser.add_argument("--project", default=None, help="Optional project slug within that brand")
+    assemble_parser.add_argument("--brief", required=True, help="What the assembled video is about")
+    assemble_parser.add_argument(
+        "--image", action="append", default=None, help="Explicit image path(s); default: the brand's asset bank"
+    )
+    assemble_parser.add_argument("--audio", default=None, help="Optional background audio track path")
+    assemble_parser.add_argument("--seconds-per-image", type=float, default=3.0)
+    assemble_parser.add_argument("--no-review", action="store_true", help="Skip the Designer's post-assembly QC pass")
+
     write_publication_parser = subparsers.add_parser(
         "write-publication", help="Write a long-form publication (book/course/ebook) as markdown"
     )
@@ -419,6 +461,8 @@ def main() -> None:
         _run_animate(args, settings)
     elif args.command == "compose":
         _run_compose(args, settings)
+    elif args.command == "assemble":
+        _run_assemble(args, settings)
     elif args.command == "write-publication":
         _run_write_publication(args, settings)
     elif args.command == "draft":

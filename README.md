@@ -42,7 +42,7 @@ instance.
   ready-to-run -- see `workflows/README.md` for exporting your own. AMD
   ROCm/Vulkan is entirely a property of how you build/run your ComfyUI
   instance; this client neither knows nor cares.
-- **Nine agent roles so far:**
+- **Ten agent roles so far -- the full creative layer is now built:**
   - `KnowledgeAgent` scrapes brand-approved URLs into a per-brand corpus of
     markdown pages + downloaded images under
     `knowledge/<customer-slug>/<brand-slug>/` (checks `robots.txt` before
@@ -83,6 +83,14 @@ instance.
     against `SaveAudio`'s source, a different key from images/video). Falls
     back to a bring-your-own `MusicApiProvider` if no local audio workflow
     is configured, since no cross-vendor standard exists there.
+  - `StudioWorker` assembles the brand's existing asset bank (images/audio,
+    or raw video clips) into shorts/reels via `ffmpeg` -- it generates
+    nothing itself, only edits what Artist/VideoMaster/MusicAgent already
+    produced. Reports to `Designer`: `assemble_and_review()` extracts the
+    result's first frame and runs it through the same QC pass used
+    elsewhere. `ffmpeg` itself isn't installable in this sandbox, so this
+    is verified against a mocked runner (exact command/concat-file syntax
+    asserted) rather than a real render.
 - **Escalation replaces "Director" as a role, not an LLM.** When the
   supervisor can't approve a draft (no revision offered, or revisions
   exhausted), the graph's `escalate` node interrupts and the run sits in
@@ -215,6 +223,21 @@ python -m agency.cli compose --org org/my_customer.yaml --brand my-brand \
 
 Saves to `assets/<customer>/<brand>/generated/audio/`.
 
+## Assembling a short/reel (StudioWorker)
+
+Requires `ffmpeg` on your `PATH` (not this repo's concern to install). By
+default pulls every image from the brand's own asset bank
+(`assets/<customer>/<brand>/generated/images/`):
+
+```bash
+python -m agency.cli assemble --org org/my_customer.yaml --brand my-brand \
+  --brief "product highlights reel" --audio assets/my-customer/my-brand/generated/audio/track.flac
+```
+
+Or pass explicit `--image` paths. Saves to
+`assets/<customer>/<brand>/generated/videos/assembled.mp4`, and (unless
+`--no-review`) has `Designer` review the first extracted frame.
+
 ## Human review queue
 
 Any draft the supervisor can't approve pauses instead of silently failing:
@@ -274,11 +297,11 @@ model runner is required to run the suite.
 
 ## Roadmap (not yet built)
 
-- Wiring `Artist` into the post graph and Postiz (needs a
+- Wiring the creative layer into the post graph and Postiz (needs a
   `PostizClient.upload_media()` using `POST /public/v1/upload`, then
-  attaching the returned media to a post's `value[].image`).
-- Creative layer still open: `StudioWorker` (assembling the asset bank into
-  shorts/reels/video, reporting to `Designer`).
+  attaching the returned media to a post's `value[].image`) -- right now
+  `illustrate`/`animate`/`compose`/`write-publication`/`assemble` are all
+  standalone commands, not part of `draft`/`run-all`.
 - `Secretary` (per customer: deadlines, platform compliance, paperwork,
   bookkeeping) and `DevOps` (backups, operational security, pipeline health)
   as plain Python graph nodes -- deliberately not LLM agents, per the
