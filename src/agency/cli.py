@@ -11,6 +11,7 @@ from agency.agents.content_agent import ContentAgent
 from agency.agents.designer import Designer
 from agency.agents.ghost_writer import GhostWriter, render_publication_markdown, slugify
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
+from agency.agents.music_agent import MusicAgent
 from agency.agents.supervisor_agent import SupervisorAgent
 from agency.agents.topic_agent import TopicAgent
 from agency.agents.video_master import VideoMaster
@@ -142,6 +143,24 @@ def _run_write_publication(args: argparse.Namespace, settings: Settings) -> None
     output_path = content_dir / f"{slugify(publication.title)}.md"
     output_path.write_text(render_publication_markdown(publication))
     print(output_path)
+
+
+def _run_compose(args: argparse.Namespace, settings: Settings) -> None:
+    customer = load_customer(args.org)
+    brand = find_brand(customer, args.brand)
+    project = find_project(brand, args.project) if args.project else None
+    ctx = brand_context(brand, project)
+
+    provider = default_provider(settings)
+    comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+    music_agent = MusicAgent(provider, comfyui_client, settings.audio_workflows_dir)
+
+    assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "audio"
+    saved = music_agent.generate(ctx, args.brief, assets_dir, style=args.style, seed=args.seed)
+    comfyui_client.close()
+
+    for path in saved:
+        print(path)
 
 
 def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
@@ -321,6 +340,18 @@ def main() -> None:
         help="History output key to collect ('images' for native SaveVideo, 'gifs' for VHS combine)",
     )
 
+    compose_parser = subparsers.add_parser(
+        "compose", help="Generate music/SFX via a local ComfyUI instance and save it to the brand's asset bank"
+    )
+    compose_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
+    compose_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
+    compose_parser.add_argument("--project", default=None, help="Optional project slug within that brand")
+    compose_parser.add_argument("--brief", required=True, help="What the music/SFX should sound like")
+    compose_parser.add_argument(
+        "--style", default="default", help="Workflow name under audio_workflows_dir (default: 'default')"
+    )
+    compose_parser.add_argument("--seed", type=int, default=None)
+
     write_publication_parser = subparsers.add_parser(
         "write-publication", help="Write a long-form publication (book/course/ebook) as markdown"
     )
@@ -386,6 +417,8 @@ def main() -> None:
         _run_illustrate(args, settings)
     elif args.command == "animate":
         _run_animate(args, settings)
+    elif args.command == "compose":
+        _run_compose(args, settings)
     elif args.command == "write-publication":
         _run_write_publication(args, settings)
     elif args.command == "draft":

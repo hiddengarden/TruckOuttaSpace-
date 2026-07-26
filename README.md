@@ -42,7 +42,7 @@ instance.
   ready-to-run -- see `workflows/README.md` for exporting your own. AMD
   ROCm/Vulkan is entirely a property of how you build/run your ComfyUI
   instance; this client neither knows nor cares.
-- **Eight agent roles so far:**
+- **Nine agent roles so far:**
   - `KnowledgeAgent` scrapes brand-approved URLs into a per-brand corpus of
     markdown pages + downloaded images under
     `knowledge/<customer-slug>/<brand-slug>/` (checks `robots.txt` before
@@ -78,6 +78,11 @@ instance.
     (optionally) per-chapter illustrations. `agency write-publication`
     saves the result as a single markdown file under
     `content/<customer>/<brand>/`.
+  - `MusicAgent` writes music/SFX prompts and renders via ComfyUI's native
+    audio nodes (output collected under the `"audio"` key -- verified
+    against `SaveAudio`'s source, a different key from images/video). Falls
+    back to a bring-your-own `MusicApiProvider` if no local audio workflow
+    is configured, since no cross-vendor standard exists there.
 - **Escalation replaces "Director" as a role, not an LLM.** When the
   supervisor can't approve a draft (no revision offered, or revisions
   exhausted), the graph's `escalate` node interrupts and the run sits in
@@ -198,6 +203,18 @@ Add `--illustrate-chapters` to get an image per chapter (not just a cover),
 or `--no-illustrations` to skip ComfyUI entirely and get text only. Saves to
 `content/<customer>/<brand>/<slug>.md`.
 
+## Generating music/SFX (MusicAgent + ComfyUI)
+
+Your own workflow under `AUDIO_WORKFLOWS_DIR` (default `./workflows/audio`;
+no default is shipped -- see `workflows/README.md`):
+
+```bash
+python -m agency.cli compose --org org/my_customer.yaml --brand my-brand \
+  --brief "upbeat synth pop background track, 120bpm"
+```
+
+Saves to `assets/<customer>/<brand>/generated/audio/`.
+
 ## Human review queue
 
 Any draft the supervisor can't approve pauses instead of silently failing:
@@ -260,9 +277,8 @@ model runner is required to run the suite.
 - Wiring `Artist` into the post graph and Postiz (needs a
   `PostizClient.upload_media()` using `POST /public/v1/upload`, then
   attaching the returned media to a post's `value[].image`).
-- Creative layer still open: a music/SFX agent, and `StudioWorker`
-  (assembling the asset bank into shorts/reels/video, reporting to
-  `Designer`).
+- Creative layer still open: `StudioWorker` (assembling the asset bank into
+  shorts/reels/video, reporting to `Designer`).
 - `Secretary` (per customer: deadlines, platform compliance, paperwork,
   bookkeeping) and `DevOps` (backups, operational security, pipeline health)
   as plain Python graph nodes -- deliberately not LLM agents, per the

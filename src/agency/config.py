@@ -23,6 +23,7 @@ class Settings:
     comfyui_base_url: str
     workflows_dir: str
     video_workflows_dir: str
+    audio_workflows_dir: str
     assets_root: str
     content_root: str
 
@@ -44,6 +45,7 @@ class Settings:
             comfyui_base_url=os.environ.get("COMFYUI_BASE_URL", "http://localhost:8188"),
             workflows_dir=os.environ.get("WORKFLOWS_DIR", "./workflows/image"),
             video_workflows_dir=os.environ.get("VIDEO_WORKFLOWS_DIR", "./workflows/video"),
+            audio_workflows_dir=os.environ.get("AUDIO_WORKFLOWS_DIR", "./workflows/audio"),
             assets_root=os.environ.get("ASSETS_ROOT", "./assets"),
             content_root=os.environ.get("CONTENT_ROOT", "./content"),
         )

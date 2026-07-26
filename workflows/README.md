@@ -45,3 +45,16 @@ way. `VideoMaster.generate()`'s `output_key` defaults to `"images"` --
 ComfyUI's native `SaveVideo`/`SaveWEBM` nodes report output under that same
 key (per `comfy_api/latest/_ui.py`) -- pass `output_key="gifs"` instead if
 your graph uses the third-party VideoHelperSuite combine node.
+
+## Audio (`audio/`)
+
+Same idea again, under `audio/<name>.json` + `audio/<name>.mapping.json`
+(see `AUDIO_WORKFLOWS_DIR`, default `./workflows/audio`) -- a Stable
+Audio/MusicGen-style graph, no default shipped for the same reason as
+video. `MusicAgent` collects output under the `"audio"` key, per
+`SaveAudio`'s `AudioSaveHelper.get_save_audio_ui()` ->
+`SavedAudios.as_dict()` in `comfy_api/latest/_ui.py` -- a different key
+from images/video. If you have no local audio workflow at all,
+`MusicAgent` accepts a `MusicApiProvider` (bring your own -- there's no
+cross-vendor standard for audio generation the way OpenAI-compatible chat
+completions covers LLMs) as a fallback.
