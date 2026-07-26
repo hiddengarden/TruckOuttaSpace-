@@ -40,5 +40,15 @@ brands:
         name: Fall Launch Campaign
         kind: campaign
         topic_hint: "our new fall product line"
+        due_date: "2026-10-01"  # checked by Secretary's check_deadlines()
         # extra_guidelines / extra_banned_topics / posts_per_run may all
         # override or add to the brand's own, scoped to this project only.
+
+    # Optional: a website (WordPress) `write-publication --publish-to-wordpress`
+    # can post long-form content to, alongside Postiz's social channels.
+    # app_password_env names the .env var holding the Application Password --
+    # the secret itself never lives in this file.
+    # wordpress:
+    #   base_url: "https://my-brand.example.com"
+    #   username: "agency-bot"
+    #   app_password_env: "WORDPRESS_APP_PASSWORD_EXAMPLE_BRAND"

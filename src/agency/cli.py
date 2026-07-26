@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 import time
 from contextlib import contextmanager
@@ -28,6 +29,8 @@ from agency.knowledge import KnowledgeBase
 from agency.org import brand_context, discover_customers, find_brand, find_project, load_customer
 from agency.postiz.client import PostizClient
 from agency.run import resume_escalation, run_all
+from agency.wordpress.client import WordPressClient
+from agency.wordpress.publish import publish_publication_to_wordpress
 
 
 @contextmanager
@@ -147,6 +150,19 @@ def _run_write_publication(args: argparse.Namespace, settings: Settings) -> None
     output_path = content_dir / f"{slugify(publication.title)}.md"
     output_path.write_text(render_publication_markdown(publication))
     print(output_path)
+
+    if args.publish_to_wordpress is not None:
+        if brand.wordpress is None:
+            print(f"Brand '{brand.slug}' has no `wordpress:` config; skipping", file=sys.stderr)
+            return
+        app_password = os.environ.get(brand.wordpress.app_password_env, "")
+        if not app_password:
+            print(f"Env var {brand.wordpress.app_password_env} is not set; skipping", file=sys.stderr)
+            return
+        wp_client = WordPressClient(brand.wordpress.base_url, brand.wordpress.username, app_password)
+        result = publish_publication_to_wordpress(wp_client, publication, status=args.publish_to_wordpress)
+        wp_client.close()
+        print(f"WordPress: {result.get('link', result)}")
 
 
 def _run_compose(args: argparse.Namespace, settings: Settings) -> None:
@@ -459,6 +475,12 @@ def main() -> None:
     )
     write_publication_parser.add_argument(
         "--no-illustrations", action="store_true", help="Skip the cover/illustrations entirely (no ComfyUI needed)"
+    )
+    write_publication_parser.add_argument(
+        "--publish-to-wordpress",
+        choices=["draft", "publish", "pending", "future"],
+        default=None,
+        help="Also publish to the brand's configured WordPress site (requires `wordpress:` in its org YAML)",
     )
 
     draft_parser = subparsers.add_parser("draft", help="Draft, supervise, and optionally publish one post")

@@ -18,6 +18,17 @@ class Project(BaseModel):
     due_date: str | None = None  # ISO date (YYYY-MM-DD); checked by Secretary
 
 
+class WordPressConfig(BaseModel):
+    """Optional website-publishing target for a brand. `app_password_env`
+    names the .env variable holding the Application Password -- the secret
+    itself is never stored in this YAML (same reasoning as POSTIZ_API_KEY
+    living in .env, not brands/*.yaml)."""
+
+    base_url: str
+    username: str
+    app_password_env: str
+
+
 class Brand(BaseModel):
     slug: str
     name: str
@@ -30,6 +41,7 @@ class Brand(BaseModel):
     knowledge_sources: list[str] = Field(default_factory=list)
     posts_per_run: int = Field(default=1, ge=1)
     projects: list[Project] = Field(default_factory=list)
+    wordpress: WordPressConfig | None = None
 
 
 class Customer(BaseModel):

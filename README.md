@@ -10,6 +10,15 @@ instance.
   separate service (deployed however you like, e.g. rootless Podman/Quadlet)
   and this codebase only talks to its `/public/v1` REST API. Upgrading Postiz
   is just bumping a container tag, with no merge conflicts against upstream.
+- **WordPress is the website-publishing fallback, not Elxis.** Both were
+  candidates; Elxis's documented "REST API" turned out to be a content
+  *source* for its microblog module (pulling external feeds in), with no
+  found documentation of an endpoint for creating articles programmatically.
+  WordPress's REST API is core, stable since 4.7, with Application Passwords
+  (core since 5.6) as the standard non-deprecated auth for external apps --
+  the safer operational bet. `agency/wordpress/client.py` wraps it
+  (`wp-json/wp/v2`); per-brand config is optional (`wordpress:` in a
+  customer's YAML), and the secret lives in `.env`, never in the YAML.
 - **Org hierarchy: Agency → Customer → Brand → Project.** One YAML file per
   customer (`org/<customer-slug>.yaml`) holds that customer's brands, each
   with its own Postiz group/integration IDs, voice, and guidelines. A brand's
@@ -228,6 +237,22 @@ Add `--illustrate-chapters` to get an image per chapter (not just a cover),
 or `--no-illustrations` to skip ComfyUI entirely and get text only. Saves to
 `content/<customer>/<brand>/<slug>.md`.
 
+Add `--publish-to-wordpress draft` (or `publish`/`pending`/`future`) to also
+post it to the brand's WordPress site. Requires a `wordpress:` block on that
+brand in its `org/*.yaml`:
+
+```yaml
+wordpress:
+  base_url: "https://my-brand.example.com"
+  username: "agency-bot"
+  app_password_env: "WORDPRESS_APP_PASSWORD_MY_BRAND"   # set in .env, not here
+```
+
+Generate the Application Password under WordPress admin -> Users -> Profile
+-> Application Passwords. The cover and every chapter illustration are
+uploaded as WordPress media first, with their markdown links rewritten to
+the uploaded URLs, so images actually resolve on the live post.
+
 ## Generating music/SFX (MusicAgent + ComfyUI)
 
 Your own workflow under `AUDIO_WORKFLOWS_DIR` (default `./workflows/audio`;
@@ -328,6 +353,10 @@ model runner is required to run the suite.
   attaching the returned media to a post's `value[].image`) -- right now
   `illustrate`/`animate`/`compose`/`write-publication`/`assemble` are all
   standalone commands, not part of `draft`/`run-all`.
+- WordPress category/tag selection is manual (`create_post()` takes IDs
+  looked up via `list_categories()`/`list_tags()`) -- no agent maps a
+  brief to taxonomy yet. `write-publication --publish-to-wordpress` is
+  also standalone, not part of `run-all`.
 - Every role from the original expanded scope now exists in some form;
   `admin-report`/`devops-*` are standalone CLI commands, not yet folded
   into `run-all`'s scheduled cycle (e.g. an automatic weekly backup, or
