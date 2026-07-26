@@ -42,7 +42,7 @@ instance.
   ready-to-run -- see `workflows/README.md` for exporting your own. AMD
   ROCm/Vulkan is entirely a property of how you build/run your ComfyUI
   instance; this client neither knows nor cares.
-- **Five agent roles so far:**
+- **Six agent roles so far:**
   - `KnowledgeAgent` scrapes brand-approved URLs into a per-brand corpus of
     markdown pages + downloaded images under
     `knowledge/<customer-slug>/<brand-slug>/` (checks `robots.txt` before
@@ -62,6 +62,8 @@ instance.
     (structurally different graphs); `checkpoint` overrides just the model
     within one workflow. Not yet wired into the post graph itself -- run it
     standalone via `agency illustrate` for now (see below).
+  - `VideoMaster` is the same pattern for video (`agency animate`), meant to
+    hand its output to a future `StudioWorker` for shorts/reels assembly.
 - **Escalation replaces "Director" as a role, not an LLM.** When the
   supervisor can't approve a draft (no revision offered, or revisions
   exhausted), the graph's `escalate` node interrupts and the run sits in
@@ -153,6 +155,20 @@ Saves output(s) to `assets/<customer>/<brand>/generated/images/`. Not yet
 wired into `draft`/`run-all` -- attaching a generated image to a Postiz post
 needs `POST /public/v1/upload` first, which isn't built yet.
 
+## Generating a video (VideoMaster + ComfyUI)
+
+Same idea, your own workflow under `VIDEO_WORKFLOWS_DIR` (default
+`./workflows/video`; no default is shipped -- see `workflows/README.md`):
+
+```bash
+python -m agency.cli animate --org org/my_customer.yaml --brand my-brand \
+  --brief "a bicycle racing down a hill, drone shot" --style default
+```
+
+Saves to `assets/<customer>/<brand>/generated/videos/`. Also not yet wired
+into publishing, and meant to eventually feed a `StudioWorker` rather than
+go straight to Postiz.
+
 ## Human review queue
 
 Any draft the supervisor can't approve pauses instead of silently failing:
@@ -215,10 +231,10 @@ model runner is required to run the suite.
 - Wiring `Artist` into the post graph and Postiz (needs a
   `PostizClient.upload_media()` using `POST /public/v1/upload`, then
   attaching the returned media to a post's `value[].image`).
-- Creative layer: `Designer` (creative QC / brand-voice gate), `VideoMaster`
-  (video generation -- same ComfyUI client, a video-output workflow), a
-  music/SFX agent, `GhostWriter` (long-form content), and `StudioWorker`
-  (assembling the asset bank into shorts/reels/video).
+- Creative layer: `Designer` (creative QC / brand-voice gate), a music/SFX
+  agent, `GhostWriter` (long-form content), and `StudioWorker` (assembling
+  the asset bank -- including Artist/VideoMaster output -- into
+  shorts/reels/video).
 - `Secretary` (per customer: deadlines, platform compliance, paperwork,
   bookkeeping) and `DevOps` (backups, operational security, pipeline health)
   as plain Python graph nodes -- deliberately not LLM agents, per the

@@ -22,6 +22,7 @@ class Settings:
     run_interval_seconds: int
     comfyui_base_url: str
     workflows_dir: str
+    video_workflows_dir: str
     assets_root: str
 
     @classmethod
@@ -41,5 +42,6 @@ class Settings:
             run_interval_seconds=int(os.environ.get("RUN_INTERVAL_SECONDS", "21600")),
             comfyui_base_url=os.environ.get("COMFYUI_BASE_URL", "http://localhost:8188"),
             workflows_dir=os.environ.get("WORKFLOWS_DIR", "./workflows/image"),
+            video_workflows_dir=os.environ.get("VIDEO_WORKFLOWS_DIR", "./workflows/video"),
             assets_root=os.environ.get("ASSETS_ROOT", "./assets"),
         )

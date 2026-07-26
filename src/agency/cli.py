@@ -11,6 +11,7 @@ from agency.agents.content_agent import ContentAgent
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
 from agency.agents.supervisor_agent import SupervisorAgent
 from agency.agents.topic_agent import TopicAgent
+from agency.agents.video_master import VideoMaster
 from agency.comfyui.client import ComfyUIClient
 from agency.config import Settings
 from agency.escalations import EscalationRegistry
@@ -62,6 +63,32 @@ def _run_illustrate(args: argparse.Namespace, settings: Settings) -> None:
         style=args.style,
         checkpoint=args.checkpoint,
         seed=args.seed,
+    )
+    comfyui_client.close()
+
+    for path in saved:
+        print(path)
+
+
+def _run_animate(args: argparse.Namespace, settings: Settings) -> None:
+    customer = load_customer(args.org)
+    brand = find_brand(customer, args.brand)
+    project = find_project(brand, args.project) if args.project else None
+    ctx = brand_context(brand, project)
+
+    provider = default_provider(settings)
+    comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+    video_master = VideoMaster(provider, comfyui_client, settings.video_workflows_dir)
+
+    assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "videos"
+    saved = video_master.generate(
+        ctx,
+        args.brief,
+        assets_dir,
+        style=args.style,
+        checkpoint=args.checkpoint,
+        seed=args.seed,
+        output_key=args.output_key,
     )
     comfyui_client.close()
 
@@ -223,6 +250,24 @@ def main() -> None:
     illustrate_parser.add_argument("--checkpoint", default=None, help="Override the model checkpoint filename")
     illustrate_parser.add_argument("--seed", type=int, default=None)
 
+    animate_parser = subparsers.add_parser(
+        "animate", help="Generate a video via a local ComfyUI instance and save it to the brand's asset bank"
+    )
+    animate_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
+    animate_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
+    animate_parser.add_argument("--project", default=None, help="Optional project slug within that brand")
+    animate_parser.add_argument("--brief", required=True, help="What the video should depict")
+    animate_parser.add_argument(
+        "--style", default="default", help="Workflow name under video_workflows_dir (default: 'default')"
+    )
+    animate_parser.add_argument("--checkpoint", default=None, help="Override the model checkpoint filename")
+    animate_parser.add_argument("--seed", type=int, default=None)
+    animate_parser.add_argument(
+        "--output-key",
+        default="images",
+        help="History output key to collect ('images' for native SaveVideo, 'gifs' for VHS combine)",
+    )
+
     draft_parser = subparsers.add_parser("draft", help="Draft, supervise, and optionally publish one post")
     draft_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
     draft_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
@@ -271,6 +316,8 @@ def main() -> None:
         _run_ingest(args, settings)
     elif args.command == "illustrate":
         _run_illustrate(args, settings)
+    elif args.command == "animate":
+        _run_animate(args, settings)
     elif args.command == "draft":
         _run_draft(args, settings)
     elif args.command == "run-all":

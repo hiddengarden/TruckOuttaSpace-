@@ -32,3 +32,16 @@ To use your own workflow:
 `default.json`/`default.mapping.json` exist mainly so `patch_workflow()` has
 a real, sourced fixture to test against -- not as something meant to run
 unmodified against your instance.
+
+## Video (`video/`)
+
+Same idea, under `video/<name>.json` + `video/<name>.mapping.json` (see
+`VIDEO_WORKFLOWS_DIR`, default `./workflows/video`). No default is shipped
+here -- unlike the image case, there's no equivalent official ComfyUI
+example graph to source one from truthfully, and image-generation workflows
+aren't drop-in compatible with video ones. Build your own image-to-video or
+text-to-video graph in the UI, export it, and write the mapping the same
+way. `VideoMaster.generate()`'s `output_key` defaults to `"images"` --
+ComfyUI's native `SaveVideo`/`SaveWEBM` nodes report output under that same
+key (per `comfy_api/latest/_ui.py`) -- pass `output_key="gifs"` instead if
+your graph uses the third-party VideoHelperSuite combine node.
