@@ -20,6 +20,9 @@ class Settings:
     org_dir: str
     checkpoint_db_path: str
     run_interval_seconds: int
+    comfyui_base_url: str
+    workflows_dir: str
+    assets_root: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -36,4 +39,7 @@ class Settings:
             org_dir=os.environ.get("ORG_DIR", "./org"),
             checkpoint_db_path=os.environ.get("CHECKPOINT_DB_PATH", "./state/checkpoints.db"),
             run_interval_seconds=int(os.environ.get("RUN_INTERVAL_SECONDS", "21600")),
+            comfyui_base_url=os.environ.get("COMFYUI_BASE_URL", "http://localhost:8188"),
+            workflows_dir=os.environ.get("WORKFLOWS_DIR", "./workflows/image"),
+            assets_root=os.environ.get("ASSETS_ROOT", "./assets"),
         )

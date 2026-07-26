@@ -6,10 +6,12 @@ from pathlib import Path
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from agency.agents.artist import Artist
 from agency.agents.content_agent import ContentAgent
 from agency.agents.knowledge_agent import KnowledgeAgent, RobotsDisallowed
 from agency.agents.supervisor_agent import SupervisorAgent
 from agency.agents.topic_agent import TopicAgent
+from agency.comfyui.client import ComfyUIClient
 from agency.config import Settings
 from agency.escalations import EscalationRegistry
 from agency.graph import build_post_graph, initial_post_state
@@ -40,6 +42,31 @@ def _run_ingest(args: argparse.Namespace, settings: Settings) -> None:
                 print(f"skipped {url}: {exc}", file=sys.stderr)
     finally:
         agent.close()
+
+
+def _run_illustrate(args: argparse.Namespace, settings: Settings) -> None:
+    customer = load_customer(args.org)
+    brand = find_brand(customer, args.brand)
+    project = find_project(brand, args.project) if args.project else None
+    ctx = brand_context(brand, project)
+
+    provider = default_provider(settings)
+    comfyui_client = ComfyUIClient(settings.comfyui_base_url)
+    artist = Artist(provider, comfyui_client, settings.workflows_dir)
+
+    assets_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "images"
+    saved = artist.generate(
+        ctx,
+        args.brief,
+        assets_dir,
+        style=args.style,
+        checkpoint=args.checkpoint,
+        seed=args.seed,
+    )
+    comfyui_client.close()
+
+    for path in saved:
+        print(path)
 
 
 def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
@@ -183,6 +210,19 @@ def main() -> None:
     ingest_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
     ingest_parser.add_argument("--url", action="append", required=True, dest="urls")
 
+    illustrate_parser = subparsers.add_parser(
+        "illustrate", help="Generate an image via a local ComfyUI instance and save it to the brand's asset bank"
+    )
+    illustrate_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
+    illustrate_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
+    illustrate_parser.add_argument("--project", default=None, help="Optional project slug within that brand")
+    illustrate_parser.add_argument("--brief", required=True, help="What the image should depict")
+    illustrate_parser.add_argument(
+        "--style", default="default", help="Workflow name under workflows_dir (default: 'default')"
+    )
+    illustrate_parser.add_argument("--checkpoint", default=None, help="Override the model checkpoint filename")
+    illustrate_parser.add_argument("--seed", type=int, default=None)
+
     draft_parser = subparsers.add_parser("draft", help="Draft, supervise, and optionally publish one post")
     draft_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
     draft_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
@@ -229,6 +269,8 @@ def main() -> None:
 
     if args.command == "ingest":
         _run_ingest(args, settings)
+    elif args.command == "illustrate":
+        _run_illustrate(args, settings)
     elif args.command == "draft":
         _run_draft(args, settings)
     elif args.command == "run-all":

@@ -33,7 +33,16 @@ instance.
   the *only* place a framework was adopted: the org data model and the
   Postiz/ComfyUI/knowledge-scraping clients stay plain Python, since no
   framework does that part for you anyway.
-- **Four agent roles so far:**
+- **ComfyUI is a plain HTTP client, no framework, no GPU-specific code.**
+  `agency/comfyui/client.py` wraps the real queue API (`POST /prompt`,
+  `GET /history/{id}`, `GET /view`), verified against
+  comfyanonymous/ComfyUI's own source and its official
+  `script_examples/basic_api_example.py`. Workflows are host-specific (they
+  name your installed checkpoints/custom nodes), so none is shipped as
+  ready-to-run -- see `workflows/README.md` for exporting your own. AMD
+  ROCm/Vulkan is entirely a property of how you build/run your ComfyUI
+  instance; this client neither knows nor cares.
+- **Five agent roles so far:**
   - `KnowledgeAgent` scrapes brand-approved URLs into a per-brand corpus of
     markdown pages + downloaded images under
     `knowledge/<customer-slug>/<brand-slug>/` (checks `robots.txt` before
@@ -48,6 +57,11 @@ instance.
   - `SupervisorAgent` reviews every draft against the brand's
     guidelines/banned topics, with up to one revision round before the
     graph escalates instead of silently giving up.
+  - `Artist` writes an image-generation prompt from a brief + the brand's
+    voice, then renders it via ComfyUI. `style` selects a workflow file
+    (structurally different graphs); `checkpoint` overrides just the model
+    within one workflow. Not yet wired into the post graph itself -- run it
+    standalone via `agency illustrate` for now (see below).
 - **Escalation replaces "Director" as a role, not an LLM.** When the
   supervisor can't approve a draft (no revision offered, or revisions
   exhausted), the graph's `escalate` node interrupts and the run sits in
@@ -122,6 +136,23 @@ prints a thread id and exits with status 2 so you know to check `agency
 review`. Add `--dry-run` to skip the Postiz call entirely, or `--publish now`
 / `--publish schedule` once you're ready to go live.
 
+## Generating an image (Artist + ComfyUI)
+
+Requires a running ComfyUI instance (`COMFYUI_BASE_URL`, default
+`http://localhost:8188`) and your own exported workflow -- see
+`workflows/README.md`; the shipped `workflows/image/default.json` is
+ComfyUI's own documentation example and won't render on your instance
+as-is.
+
+```bash
+python -m agency.cli illustrate --org org/my_customer.yaml --brand my-brand \
+  --brief "a red bicycle in a sunlit garage" --style default --seed 42
+```
+
+Saves output(s) to `assets/<customer>/<brand>/generated/images/`. Not yet
+wired into `draft`/`run-all` -- attaching a generated image to a Postiz post
+needs `POST /public/v1/upload` first, which isn't built yet.
+
 ## Human review queue
 
 Any draft the supervisor can't approve pauses instead of silently failing:
@@ -181,11 +212,13 @@ model runner is required to run the suite.
 
 ## Roadmap (not yet built)
 
-- Creative layer: `Designer` (creative QC / brand-voice gate), `Artist` and
-  `VideoMaster` (image/video generation via a local ComfyUI instance --
-  its REST API is already verified: `POST /prompt`, `GET /history/{id}`,
-  `GET /view`), a music/SFX agent, `GhostWriter` (long-form content), and
-  `StudioWorker` (assembling the asset bank into shorts/reels/video).
+- Wiring `Artist` into the post graph and Postiz (needs a
+  `PostizClient.upload_media()` using `POST /public/v1/upload`, then
+  attaching the returned media to a post's `value[].image`).
+- Creative layer: `Designer` (creative QC / brand-voice gate), `VideoMaster`
+  (video generation -- same ComfyUI client, a video-output workflow), a
+  music/SFX agent, `GhostWriter` (long-form content), and `StudioWorker`
+  (assembling the asset bank into shorts/reels/video).
 - `Secretary` (per customer: deadlines, platform compliance, paperwork,
   bookkeeping) and `DevOps` (backups, operational security, pipeline health)
   as plain Python graph nodes -- deliberately not LLM agents, per the

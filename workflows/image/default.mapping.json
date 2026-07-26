@@ -1,0 +1,6 @@
+{
+    "positive_prompt": "6.text",
+    "negative_prompt": "7.text",
+    "seed": "3.seed",
+    "checkpoint": "4.ckpt_name"
+}
