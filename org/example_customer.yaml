@@ -35,6 +35,13 @@ brands:
     # knowledge_folders:
     #   - "/home/you/Documents/My vault"
 
+    # Pulls every Paperless-ngx document with this tag (OCR'd content) into
+    # the knowledge base. Paperless holds one shared archive across every
+    # brand/customer, so this scoping is required, not optional -- tag
+    # whatever invoices/paperwork belong to this brand with a matching tag
+    # in Paperless's own UI. Requires PAPERLESS_API_TOKEN in .env.
+    # knowledge_paperless_tag: "brand:example-brand"
+
     # Default posts proposed/drafted per run when a brand has no projects,
     # or a project below doesn't override it.
     posts_per_run: 1

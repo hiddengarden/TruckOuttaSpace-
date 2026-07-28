@@ -17,6 +17,7 @@ from agency.inference.provider import LLMProvider, LocalInferenceUnavailable, un
 from agency.knowledge import KnowledgeBase
 from agency.ledger import RunLedger
 from agency.org import Brand, Customer, Project, brand_context, effective_posts_per_run
+from agency.paperless.client import PaperlessClient
 from agency.postiz.client import PostizClient
 from agency.state import TopicHistory
 
@@ -63,6 +64,7 @@ def run_all(
     workflows_dir: str | None = None,
     assets_root: str | None = None,
     only: set[tuple[str, str]] | None = None,
+    paperless_client: PaperlessClient | None = None,
 ) -> list[RunResult]:
     """Two global phases, not per-brand: every active customer/brand/project's
     text work (Ollama) runs to completion before any ComfyUI-heavy image work
@@ -102,6 +104,18 @@ def run_all(
                         knowledge_agent.ingest_local_folder(customer.slug, brand.slug, folder)
                     except OSError as exc:
                         results[key].ingest_errors.append(f"{folder}: {exc}")
+
+                if brand.knowledge_paperless_tag and paperless_client is not None:
+                    try:
+                        tag_id = paperless_client.find_tag_id(brand.knowledge_paperless_tag)
+                        if tag_id is None:
+                            results[key].ingest_errors.append(
+                                f"paperless tag '{brand.knowledge_paperless_tag}' not found"
+                            )
+                        else:
+                            knowledge_agent.ingest_paperless(customer.slug, brand.slug, paperless_client, tag_id=tag_id)
+                    except httpx.HTTPError as exc:
+                        results[key].ingest_errors.append(f"paperless: {exc}")
 
                 knowledge_base = KnowledgeBase(customer.slug, brand.slug, knowledge_root)
                 topic_history = TopicHistory(state_root, customer.slug, brand.slug, key[2])

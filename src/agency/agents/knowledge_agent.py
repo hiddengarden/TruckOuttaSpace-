@@ -165,6 +165,50 @@ class KnowledgeAgent:
             saved.append(dest)
         return saved
 
+    def ingest_paperless(
+        self,
+        customer_slug: str,
+        brand_slug: str,
+        paperless_client,
+        *,
+        tag_id: int | None = None,
+        correspondent_id: int | None = None,
+        document_type_id: int | None = None,
+        query: str | None = None,
+    ) -> list[KnowledgeDoc]:
+        """Pulls already-OCR'd document text from Paperless-ngx into the
+        same per-brand corpus URL scraping and local-folder ingestion both
+        use. At least one filter should normally be given -- Paperless
+        holds one shared archive across everything, not per-brand, so an
+        unfiltered call would mix in every other brand's/customer's
+        documents too."""
+        brand_dir = self._root / customer_slug / brand_slug
+        docs = []
+        for document in paperless_client.list_documents(
+            tag_id=tag_id, correspondent_id=correspondent_id, document_type_id=document_type_id, query=query
+        ):
+            docs.append(self._ingest_paperless_document(brand_dir, document))
+        return docs
+
+    def _ingest_paperless_document(self, brand_dir: Path, document: dict) -> KnowledgeDoc:
+        title = document.get("title") or f"document-{document['id']}"
+        content = document.get("content", "")
+        slug = _slugify(f"paperless-{document['id']}-{title}")
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        source = f"paperless:document:{document['id']}"
+
+        pages_dir = brand_dir / "pages"
+        pages_dir.mkdir(parents=True, exist_ok=True)
+        markdown_path = pages_dir / f"{slug}.md"
+        markdown_path.write_text(f"---\nsource_url: {source}\ntitle: {title}\nfetched_at: {fetched_at}\n---\n\n{content}")
+
+        doc = KnowledgeDoc(
+            id=slug, source_url=source, title=title,
+            markdown_path=str(markdown_path.relative_to(self._root)), fetched_at=fetched_at,
+        )
+        self._upsert_manifest(brand_dir, doc)
+        return doc
+
     def _check_robots(self, url: str) -> None:
         parsed = urlparse(url)
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"

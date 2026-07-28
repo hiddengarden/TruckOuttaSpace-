@@ -37,6 +37,8 @@ def _settings(**overrides) -> Settings:
         smtp_from_addr="",
         smtp_to_addr="",
         smtp_use_tls=True,
+        paperless_base_url="http://paperless.local",
+        paperless_api_token="",
     )
     base.update(overrides)
     return Settings(**base)
@@ -47,6 +49,7 @@ def test_check_service_health_reports_up_and_down():
     respx.get("http://postiz.local").mock(return_value=httpx.Response(200))
     respx.get("http://ollama.local").mock(return_value=httpx.Response(200))
     respx.get("http://comfy.local").mock(side_effect=httpx.ConnectError("refused"))
+    respx.get("http://paperless.local").mock(return_value=httpx.Response(200))
 
     results = {r.name: r for r in DevOps(_settings()).check_service_health()}
 
@@ -54,6 +57,7 @@ def test_check_service_health_reports_up_and_down():
     assert results["ollama"].ok is True
     assert results["comfyui"].ok is False
     assert "refused" in results["comfyui"].detail
+    assert results["paperless"].ok is True
 
 
 def test_check_env_file_permissions_flags_world_readable(tmp_path):
@@ -117,6 +121,7 @@ def test_consult_rnd_passes_health_results_into_stack_description():
     respx.get("http://postiz.local").mock(return_value=httpx.Response(200))
     respx.get("http://ollama.local").mock(return_value=httpx.Response(200))
     respx.get("http://comfy.local").mock(return_value=httpx.Response(200))
+    respx.get("http://paperless.local").mock(return_value=httpx.Response(200))
 
     provider = RecordingProvider()
     result = DevOps(_settings()).consult_rnd(RnDAgent(provider), focus="video pipeline")

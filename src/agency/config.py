@@ -35,6 +35,8 @@ class Settings:
     smtp_from_addr: str
     smtp_to_addr: str
     smtp_use_tls: bool
+    paperless_base_url: str
+    paperless_api_token: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -66,4 +68,6 @@ class Settings:
             smtp_from_addr=os.environ.get("SMTP_FROM_ADDR", ""),
             smtp_to_addr=os.environ.get("SMTP_TO_ADDR", ""),
             smtp_use_tls=os.environ.get("SMTP_USE_TLS", "true").lower() not in ("false", "0", "no"),
+            paperless_base_url=os.environ.get("PAPERLESS_BASE_URL", "http://localhost:8010"),
+            paperless_api_token=os.environ.get("PAPERLESS_API_TOKEN", ""),
         )

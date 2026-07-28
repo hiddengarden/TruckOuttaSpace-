@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from agency.agents.artist import Artist
@@ -35,6 +36,7 @@ from agency.notifications.email_notifier import EmailTicketNotifier
 from agency.notifications.telegram import TelegramNotifier
 from agency.notifications.tickets import TicketRegistry
 from agency.org import brand_context, discover_customers, find_brand, find_project, load_customer
+from agency.paperless.client import PaperlessClient
 from agency.postiz.client import PostizClient
 from agency.run import resume_escalation, run_all
 from agency.wordpress.client import WordPressClient
@@ -88,12 +90,13 @@ def _fail_on_local_inference_unavailable(brand_slug: str, exc: LocalInferenceUna
 
 
 def _run_ingest(args: argparse.Namespace, settings: Settings) -> None:
-    if not args.urls and not args.folders:
-        print("Pass at least one --url or --folder", file=sys.stderr)
+    if not args.urls and not args.folders and not args.paperless_tag:
+        print("Pass at least one --url, --folder, or --paperless-tag", file=sys.stderr)
         sys.exit(1)
     customer = load_customer(args.org)
     brand = find_brand(customer, args.brand)
     agent = KnowledgeAgent(settings.knowledge_root)
+    paperless_client = None
     try:
         for url in args.urls or []:
             try:
@@ -107,8 +110,21 @@ def _run_ingest(args: argparse.Namespace, settings: Settings) -> None:
                 print(f"ingested {folder} -> {len(docs)} document(s)")
             except OSError as exc:
                 print(f"skipped {folder}: {exc}", file=sys.stderr)
+        if args.paperless_tag:
+            paperless_client = PaperlessClient(settings.paperless_base_url, settings.paperless_api_token)
+            try:
+                tag_id = paperless_client.find_tag_id(args.paperless_tag)
+                if tag_id is None:
+                    print(f"skipped paperless: tag '{args.paperless_tag}' not found", file=sys.stderr)
+                else:
+                    docs = agent.ingest_paperless(customer.slug, brand.slug, paperless_client, tag_id=tag_id)
+                    print(f"ingested paperless tag '{args.paperless_tag}' -> {len(docs)} document(s)")
+            except httpx.HTTPError as exc:
+                print(f"skipped paperless: {exc}", file=sys.stderr)
     finally:
         agent.close()
+        if paperless_client is not None:
+            paperless_client.close()
 
 
 def _available_styles(workflows_dir: str | Path) -> list[str]:
@@ -448,6 +464,11 @@ def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
     postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
     escalations = EscalationRegistry(settings.state_root)
     comfyui_client = ComfyUIClient(settings.comfyui_base_url) if args.with_images else None
+    paperless_client = (
+        PaperlessClient(settings.paperless_base_url, settings.paperless_api_token)
+        if settings.paperless_api_token
+        else None
+    )
 
     def provider_factory(allow_cloud_fallback: bool):
         def on_fallback(detail: str) -> None:
@@ -473,6 +494,7 @@ def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
                 workflows_dir=settings.workflows_dir,
                 assets_root=settings.assets_root,
                 only=_parse_only(args.only),
+                paperless_client=paperless_client,
             )
     finally:
         knowledge_agent.close()
@@ -480,6 +502,8 @@ def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
             postiz_client.close()
         if comfyui_client is not None:
             comfyui_client.close()
+        if paperless_client is not None:
+            paperless_client.close()
 
     for result in results:
         label = f"{result.customer_slug}/{result.brand_slug}"
@@ -700,7 +724,9 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     ingest_parser = subparsers.add_parser(
-        "ingest", help="Scrape URLs and/or ingest local markdown folders (e.g. an Obsidian vault) into a brand's knowledge base"
+        "ingest",
+        help="Scrape URLs, ingest local markdown folders (e.g. an Obsidian vault), and/or pull tagged "
+        "Paperless-ngx documents into a brand's knowledge base",
     )
     ingest_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
     ingest_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
@@ -708,6 +734,10 @@ def main() -> None:
     ingest_parser.add_argument(
         "--folder", action="append", default=None, dest="folders",
         help="Local folder of markdown to ingest recursively (e.g. an Obsidian vault path); repeatable",
+    )
+    ingest_parser.add_argument(
+        "--paperless-tag", default=None,
+        help="Pull every Paperless-ngx document with this tag (OCR'd content) into the knowledge base",
     )
 
     illustrate_parser = subparsers.add_parser(

@@ -48,6 +48,57 @@ def test_ingest_url_writes_markdown_and_downloads_images(tmp_path):
     assert manifest[0]["id"] == "our-story"
 
 
+# --- ingest_paperless ---
+
+
+class FakePaperlessClient:
+    def __init__(self, documents):
+        self._documents = documents
+        self.calls = []
+
+    def list_documents(self, **filters):
+        self.calls.append(filters)
+        return self._documents
+
+
+def test_ingest_paperless_writes_ocr_content_into_the_corpus(tmp_path):
+    paperless = FakePaperlessClient([{"id": 42, "title": "Widgets Invoice #1", "content": "Total: $500"}])
+    agent = KnowledgeAgent(tmp_path / "knowledge")
+
+    docs = agent.ingest_paperless("acme", "widgets", paperless, tag_id=3)
+
+    assert len(docs) == 1
+    assert docs[0].title == "Widgets Invoice #1"
+    assert paperless.calls == [{"tag_id": 3, "correspondent_id": None, "document_type_id": None, "query": None}]
+
+    content = (tmp_path / "knowledge" / docs[0].markdown_path).read_text()
+    assert "source_url: paperless:document:42" in content
+    assert "Total: $500" in content
+
+    manifest = json.loads((tmp_path / "knowledge" / "acme" / "widgets" / "manifest.json").read_text())
+    assert manifest[0]["id"] == docs[0].id
+
+
+def test_ingest_paperless_falls_back_to_id_when_title_missing(tmp_path):
+    paperless = FakePaperlessClient([{"id": 7, "title": "", "content": "text"}])
+    agent = KnowledgeAgent(tmp_path / "knowledge")
+
+    docs = agent.ingest_paperless("acme", "widgets", paperless)
+
+    assert docs[0].title == "document-7"
+
+
+def test_reingesting_same_paperless_document_replaces_manifest_entry(tmp_path):
+    agent = KnowledgeAgent(tmp_path / "knowledge")
+    agent.ingest_paperless("acme", "widgets", FakePaperlessClient([{"id": 1, "title": "Doc", "content": "v1"}]))
+    agent.ingest_paperless("acme", "widgets", FakePaperlessClient([{"id": 1, "title": "Doc", "content": "v2"}]))
+
+    manifest = json.loads((tmp_path / "knowledge" / "acme" / "widgets" / "manifest.json").read_text())
+    assert len(manifest) == 1
+    content = (tmp_path / "knowledge" / manifest[0]["markdown_path"]).read_text()
+    assert "v2" in content
+
+
 @respx.mock
 def test_ingest_url_respects_robots_disallow(tmp_path):
     respx.get("https://example-co.test/robots.txt").mock(

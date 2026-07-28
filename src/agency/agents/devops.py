@@ -14,7 +14,8 @@ STACK_DESCRIPTION = (
     "- inference: Ollama (local-first) with OpenRouter as fallback\n"
     "- image/video/audio generation: ComfyUI\n"
     "- social publishing: Postiz\n"
-    "- video assembly: ffmpeg (StudioWorker)"
+    "- video assembly: ffmpeg (StudioWorker)\n"
+    "- document knowledge source: Paperless-ngx (OCR'd content, per-brand tag-scoped)"
 )
 
 
@@ -43,6 +44,7 @@ class DevOps:
             "postiz": self._settings.postiz_base_url,
             "ollama": self._settings.ollama_base_url,
             "comfyui": self._settings.comfyui_base_url,
+            "paperless": self._settings.paperless_base_url,
         }
         results = []
         for name, url in targets.items():

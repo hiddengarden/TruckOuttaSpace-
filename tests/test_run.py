@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 from langgraph.checkpoint.memory import MemorySaver
 
 from agency.agents.knowledge_agent import RobotsDisallowed
@@ -54,6 +55,7 @@ class FakeKnowledgeAgent:
     def __init__(self):
         self.ingested = []
         self.ingested_folders = []
+        self.ingested_paperless = []
 
     def ingest_url(self, customer_slug, brand_slug, url):
         if "blocked" in url:
@@ -64,6 +66,20 @@ class FakeKnowledgeAgent:
         if "missing" in str(folder):
             raise NotADirectoryError(f"{folder} is not a directory")
         self.ingested_folders.append((customer_slug, brand_slug, folder))
+
+    def ingest_paperless(self, customer_slug, brand_slug, paperless_client, **filters):
+        self.ingested_paperless.append((customer_slug, brand_slug, filters))
+
+
+class FakePaperlessClient:
+    def __init__(self, tag_ids=None, raise_on_find=False):
+        self._tag_ids = tag_ids or {}
+        self._raise_on_find = raise_on_find
+
+    def find_tag_id(self, name):
+        if self._raise_on_find:
+            raise httpx.ConnectError("paperless unreachable")
+        return self._tag_ids.get(name)
 
 
 class FakePostizClient:
@@ -93,8 +109,8 @@ class TrackingArtist:
 
 
 def _brand(
-    slug="widgets", knowledge_sources=None, knowledge_folders=None, projects=None, active=True,
-    allow_cloud_fallback=False,
+    slug="widgets", knowledge_sources=None, knowledge_folders=None, knowledge_paperless_tag=None, projects=None,
+    active=True, allow_cloud_fallback=False,
 ):
     return Brand(
         slug=slug,
@@ -105,6 +121,7 @@ def _brand(
         audience="everyone",
         knowledge_sources=knowledge_sources or [],
         knowledge_folders=knowledge_folders or [],
+        knowledge_paperless_tag=knowledge_paperless_tag,
         posts_per_run=1,
         projects=projects or [],
         active=active,
@@ -112,7 +129,7 @@ def _brand(
     )
 
 
-def _run_all(customers, tmp_path, provider_factory=None, comfyui_client=None, only=None):
+def _run_all(customers, tmp_path, provider_factory=None, comfyui_client=None, only=None, paperless_client=None):
     provider_factory = provider_factory or (lambda allow_fallback: ScriptedProvider(approve=True))
     return run_all(
         customers,
@@ -120,6 +137,7 @@ def _run_all(customers, tmp_path, provider_factory=None, comfyui_client=None, on
         state_root=str(tmp_path / "state"),
         checkpointer=MemorySaver(),
         knowledge_agent=FakeKnowledgeAgent(),
+        paperless_client=paperless_client,
         provider_factory=provider_factory,
         postiz_client=FakePostizClient(),
         escalations=EscalationRegistry(tmp_path / "state"),
@@ -157,6 +175,39 @@ def test_run_all_records_knowledge_folder_errors_but_still_composes(tmp_path):
     assert len(results[0].ingest_errors) == 1
     assert "missing" in results[0].ingest_errors[0]
     assert len(results[0].outcomes) == 1
+
+
+def test_run_all_ingests_from_paperless_by_resolved_tag_id(tmp_path):
+    customer = Customer(slug="acme", name="Acme", brands=[_brand(knowledge_paperless_tag="brand:widgets")])
+    paperless = FakePaperlessClient(tag_ids={"brand:widgets": 5})
+    results = _run_all([customer], tmp_path, paperless_client=paperless)
+
+    assert results[0].ingest_errors == []
+    assert results[0].outcomes[0].status == "published"
+
+
+def test_run_all_records_error_when_paperless_tag_not_found(tmp_path):
+    customer = Customer(slug="acme", name="Acme", brands=[_brand(knowledge_paperless_tag="brand:missing")])
+    results = _run_all([customer], tmp_path, paperless_client=FakePaperlessClient(tag_ids={}))
+
+    assert len(results[0].ingest_errors) == 1
+    assert "brand:missing" in results[0].ingest_errors[0]
+    assert len(results[0].outcomes) == 1  # still composes
+
+
+def test_run_all_records_paperless_connection_errors(tmp_path):
+    customer = Customer(slug="acme", name="Acme", brands=[_brand(knowledge_paperless_tag="brand:widgets")])
+    results = _run_all([customer], tmp_path, paperless_client=FakePaperlessClient(raise_on_find=True))
+
+    assert len(results[0].ingest_errors) == 1
+    assert "paperless" in results[0].ingest_errors[0]
+
+
+def test_run_all_skips_paperless_when_brand_has_no_tag_configured(tmp_path):
+    customer = Customer(slug="acme", name="Acme", brands=[_brand()])
+    results = _run_all([customer], tmp_path, paperless_client=FakePaperlessClient())
+
+    assert results[0].ingest_errors == []
 
 
 def test_run_all_records_ingest_errors_but_still_composes(tmp_path):

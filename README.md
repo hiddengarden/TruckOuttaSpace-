@@ -100,7 +100,12 @@ instance.
     `.obsidian`/`.trash`/`.stversions`. Plain `![alt](path.png)` images are
     copied in; Obsidian's own `![[wikilink]]` embed syntax isn't resolved
     (a separate, not-yet-built feature), so vault content ingests fine but
-    those specific embedded images won't carry over.
+    those specific embedded images won't carry over. `knowledge_paperless_tag`
+    feeds it a third way, from Paperless-ngx's already-OCR'd document text
+    (`agency/paperless/client.py`, token auth via `Authorization: Token
+    <token>` per Paperless-ngx's own docs) -- since Paperless holds one
+    shared archive across every brand/customer, a tag is the required
+    scoping mechanism, not an optional filter.
   - `TopicAgent` proposes what to post about, grounded in that brand's
     knowledge base titles, aware of recently-used topics (tracked in
     `state/<customer>/<brand>/<project-or-_default>/topic_history.json`),
@@ -214,9 +219,11 @@ curl -H "Authorization: $POSTIZ_API_KEY" "$POSTIZ_BASE_URL/public/v1/integration
 Also fill in `knowledge_sources` (URLs to re-scrape on every scheduled run),
 `knowledge_folders` (local folders of markdown -- an Obsidian vault or any
 folder of `.md` files, re-ingested the same way; `.obsidian`/`.trash`/
-`.stversions` subfolders are skipped automatically), and `posts_per_run`.
-Add a `projects:` entry per brand for any campaign/theme that should get
-its own topic focus and rotation.
+`.stversions` subfolders are skipped automatically), `knowledge_paperless_tag`
+(pulls every Paperless-ngx document with that tag -- OCR'd content -- into
+the same knowledge base; requires `PAPERLESS_API_TOKEN` in `.env`), and
+`posts_per_run`. Add a `projects:` entry per brand for any campaign/theme
+that should get its own topic focus and rotation.
 
 Two more per-brand (and, for `active`, also per-project) fields, both
 optional and defaulted safely:

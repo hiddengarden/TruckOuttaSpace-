@@ -46,6 +46,12 @@ class Brand(BaseModel):
     # knowledge_sources with a magic prefix, so which brands read from which
     # vault is a plain, unambiguous config line.
     knowledge_folders: list[str] = Field(default_factory=list)
+    # Paperless-ngx holds one shared archive across every brand/customer, so
+    # scoping is required, not optional the way it is for
+    # knowledge_sources/knowledge_folders -- a tag NAME (resolved to an ID
+    # at ingest time) is the scoping mechanism, matching how a user would
+    # naturally organize documents in the Paperless UI itself.
+    knowledge_paperless_tag: str | None = None
     posts_per_run: int = Field(default=1, ge=1)
     projects: list[Project] = Field(default_factory=list)
     wordpress: WordPressConfig | None = None
