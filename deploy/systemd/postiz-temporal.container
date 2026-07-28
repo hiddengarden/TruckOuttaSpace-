@@ -1,0 +1,35 @@
+[Unit]
+Description=Postiz's Temporal server (required by the postiz app since v2.12)
+After=postiz-temporal-postgres.service postiz-temporal-elasticsearch.service
+Requires=postiz-temporal-postgres.service postiz-temporal-elasticsearch.service
+
+[Container]
+Image=docker.io/temporalio/auto-setup:1.28.1
+ContainerName=postiz-temporal
+Network=host
+# Verbatim from gitroomhq/postiz-docker-compose's own `temporal` service,
+# adjusted only for host networking: POSTGRES_SEEDS/ES_SEEDS were container
+# DNS names (temporal-postgresql/temporal-elasticsearch), now 127.0.0.1;
+# DB_PORT was the default 5432, now 5433 since postiz-temporal-postgres.container
+# was remapped there to avoid colliding with postiz-postgres on the same host.
+Environment=DB=postgres12
+Environment=DB_PORT=5433
+Environment=POSTGRES_USER=temporal
+Environment=POSTGRES_PWD=temporal
+Environment=POSTGRES_SEEDS=127.0.0.1
+Environment=DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+Environment=ENABLE_ES=true
+Environment=ES_SEEDS=127.0.0.1
+Environment=ES_VERSION=v7
+Environment=TEMPORAL_NAMESPACE=default
+# Mirrors upstream's `./dynamicconfig:/etc/temporal/config/dynamicconfig`
+# bind mount; deploy/temporal-dynamicconfig/development-sql.yaml here was
+# fetched verbatim from gitroomhq/postiz-docker-compose. Assumes this repo
+# is deployed at %h/agency, matching agency-run-all.service's convention.
+Volume=%h/agency/deploy/temporal-dynamicconfig:/etc/temporal/config/dynamicconfig:Z
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,30 @@
+[Unit]
+Description=Postiz's Temporal Elasticsearch (visibility store)
+
+[Container]
+Image=docker.io/library/elasticsearch:7.17.27
+ContainerName=postiz-temporal-elasticsearch
+Network=host
+# Verbatim from gitroomhq/postiz-docker-compose's own temporal-elasticsearch
+# service (fetched from its docker-compose.yaml directly).
+Environment=cluster.routing.allocation.disk.threshold_enabled=true
+Environment=cluster.routing.allocation.disk.watermark.low=512mb
+Environment=cluster.routing.allocation.disk.watermark.high=256mb
+Environment=cluster.routing.allocation.disk.watermark.flood_stage=128mb
+Environment=discovery.type=single-node
+Environment=xpack.security.enabled=false
+# Deliberately small heap for a single-machine deployment sharing GPU/RAM
+# with Ollama/ComfyUI -- matches upstream's own value exactly.
+Environment=ES_JAVA_OPTS=-Xms256m -Xmx256m
+# Host networking means this is reachable at 127.0.0.1:9200 from anywhere
+# on the host, not isolated behind a private bridge the way upstream's own
+# compose has it (internal-only there) -- an accepted trade-off of choosing
+# host networking for this stack; nothing else on this host currently needs
+# port 9200, so this is unused by anything but Temporal.
+Volume=%h/Storage/agency-stack/postiz/temporal-elasticsearch:/usr/share/elasticsearch/data:Z
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

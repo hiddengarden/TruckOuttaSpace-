@@ -1,0 +1,26 @@
+[Unit]
+Description=WordPress staging site
+After=wordpress-db.service
+Requires=wordpress-db.service
+
+[Container]
+Image=docker.io/library/wordpress:latest
+ContainerName=wordpress
+Network=wordpress.network
+EnvironmentFile=%h/agency-stack/secrets/wordpress.env
+# Container name (not 127.0.0.1) since this is on a private bridge network,
+# unlike the host-networked Postiz stack -- see wordpress.network's comment
+# for why this one component is the exception.
+Environment=WORDPRESS_DB_HOST=wordpress-db:3306
+# 8090 was free on this host (discover_environment.py's listening-ports
+# scan) and avoids Apache's hardcoded port 80 entirely via rootlessport's
+# proven bridge-mode publishing, already serving paperless_default/khoj_default
+# the same way today.
+PublishPort=8090:80
+Volume=%h/Storage/agency-stack/wordpress/html:/var/www/html:Z
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

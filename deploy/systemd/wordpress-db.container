@@ -1,0 +1,15 @@
+[Unit]
+Description=WordPress staging database
+
+[Container]
+Image=docker.io/library/mariadb:11
+ContainerName=wordpress-db
+Network=wordpress.network
+EnvironmentFile=%h/agency-stack/secrets/wordpress.env
+Volume=%h/Storage/agency-stack/wordpress/db:/var/lib/mysql:Z
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

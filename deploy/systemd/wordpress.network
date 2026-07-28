@@ -1,0 +1,13 @@
+[Unit]
+Description=Private network for WordPress staging + its database
+
+[Network]
+# The ONE exception to host networking in this stack: the official
+# wordpress image hardcodes Apache to port 80 with no env var to change it,
+# and rootless Podman can't reliably bind privileged (<1024) host ports
+# under host networking without a host-wide sysctl change. A private bridge
+# + PublishPort= sidesteps that entirely via rootlessport, the same proven
+# mechanism already serving paperless_default/khoj_default's published
+# ports on this host today. WordPress doesn't need to reach Ollama/ComfyUI
+# directly anyway -- only the agency's own host-native Python process talks
+# to it, via its published port -- so isolating it costs nothing.

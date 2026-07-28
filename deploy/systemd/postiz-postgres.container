@@ -1,0 +1,26 @@
+[Unit]
+Description=Postiz Postgres
+
+[Container]
+Image=docker.io/library/postgres:17-alpine
+ContainerName=postiz-postgres
+# Host networking, not a private bridge -- this is a rootless Podman host
+# where cross-container bridge DNS was found to be more trouble than it's
+# worth for a single-machine deployment; everything in this stack reaches
+# everything else at 127.0.0.1, same as Ollama/ComfyUI/Paperless/Khoj
+# already do. Trade-off: no network-level isolation between services on
+# this host, and every container's ports share ONE port namespace with the
+# host itself -- see postiz-temporal-postgres.container for a concrete
+# consequence of that (two Postgres instances, one of them remapped off
+# 5432 to avoid colliding with this one).
+Network=host
+EnvironmentFile=%h/agency-stack/secrets/postiz.env
+# %h is systemd's home-directory specifier; Storage is the separate NVMe
+# mount point discovered under it, keeping this off the OS drive.
+Volume=%h/Storage/agency-stack/postiz/postgres:/var/lib/postgresql/data:Z
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,29 @@
+[Unit]
+Description=Postiz app
+After=postiz-postgres.service postiz-redis.service postiz-temporal.service
+Requires=postiz-postgres.service postiz-redis.service postiz-temporal.service
+
+[Container]
+Image=ghcr.io/gitroomhq/postiz-app:latest
+ContainerName=postiz
+Network=host
+EnvironmentFile=%h/agency-stack/secrets/postiz.env
+# The container's own process listens on 5000 always (upstream's compose
+# maps host 4007 -> container 5000); host networking has no port
+# translation, so it's directly reachable at 127.0.0.1:5000 here instead --
+# POSTIZ_BASE_URL in the agency's own .env should point there.
+Environment=IS_GENERAL=true
+Environment=DISABLE_REGISTRATION=false
+Environment=RUN_CRON=true
+Environment=NEXT_PUBLIC_UPLOAD_DIRECTORY=/uploads
+Environment=API_LIMIT=30
+Environment=FEE_AMOUNT=0.05
+Environment=NX_ADD_PLUGINS=false
+Volume=%h/Storage/agency-stack/postiz/config:/config:Z
+Volume=%h/Storage/agency-stack/postiz/uploads:/uploads:Z
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

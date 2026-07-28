@@ -1,0 +1,14 @@
+[Unit]
+Description=Postiz Redis
+
+[Container]
+Image=docker.io/library/redis:7.2
+ContainerName=postiz-redis
+Network=host
+Volume=%h/Storage/agency-stack/postiz/redis:/data:Z
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

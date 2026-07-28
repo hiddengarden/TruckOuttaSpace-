@@ -1,0 +1,21 @@
+[Unit]
+Description=Postiz's Temporal Postgres (separate database from postiz-postgres)
+
+[Container]
+Image=docker.io/library/postgres:16
+ContainerName=postiz-temporal-postgres
+Network=host
+EnvironmentFile=%h/agency-stack/secrets/postiz-temporal-postgres.env
+# Host networking puts every container's ports in ONE shared namespace with
+# the host -- postiz-postgres.container already claims 5432, so this one is
+# moved to 5433. The postgres image accepts extra args to the `postgres`
+# server binary as its command, so `-p 5433` really does change the listen
+# port (not a Podman port-mapping -- there is none in host mode).
+Exec=postgres -p 5433
+Volume=%h/Storage/agency-stack/postiz/temporal-postgres:/var/lib/postgresql/data:Z
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

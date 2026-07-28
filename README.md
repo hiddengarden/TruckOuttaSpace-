@@ -470,6 +470,20 @@ there; adjust `WorkingDirectory`/`ExecStart` in the `.service` file if yours
 lives elsewhere. `OnCalendar` in the `.timer` defaults to 09:00 and 17:00
 daily -- edit to taste.
 
+## Deploying Postiz + WordPress staging
+
+`deploy/README.md` has the full Quadlet setup for running Postiz's own
+stack (it needs Postgres, Redis, and -- since v2.12 -- Temporal with its own
+Postgres and Elasticsearch, 6 containers total) and a WordPress staging
+site alongside the agency, generated from and grounded against this
+project's actual discovered host environment: which networking mode, which
+drive holds the data, which ports were already taken by other running
+services (Ollama/ComfyUI/Paperless/Khoj/n8n and others), and why WordPress
+specifically needed a different networking approach than the rest of the
+stack (Apache's hardcoded port 80 vs. rootless Podman's privileged-port
+restriction). Re-run `deploy/discover_environment.py` and regenerate this
+section's decisions if deploying to a different host.
+
 ## Tests
 
 ```bash
