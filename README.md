@@ -94,7 +94,13 @@ instance.
   - `KnowledgeAgent` scrapes brand-approved URLs into a per-brand corpus of
     markdown pages + downloaded images under
     `knowledge/<customer-slug>/<brand-slug>/` (checks `robots.txt` before
-    every fetch; caps images per page and image size).
+    every fetch; caps images per page and image size). `knowledge_folders`
+    feeds the same corpus from local markdown instead -- an Obsidian vault
+    or any folder of `.md` files, recursively, skipping
+    `.obsidian`/`.trash`/`.stversions`. Plain `![alt](path.png)` images are
+    copied in; Obsidian's own `![[wikilink]]` embed syntax isn't resolved
+    (a separate, not-yet-built feature), so vault content ingests fine but
+    those specific embedded images won't carry over.
   - `TopicAgent` proposes what to post about, grounded in that brand's
     knowledge base titles, aware of recently-used topics (tracked in
     `state/<customer>/<brand>/<project-or-_default>/topic_history.json`),
@@ -205,9 +211,12 @@ curl -H "Authorization: $POSTIZ_API_KEY" "$POSTIZ_BASE_URL/public/v1/groups"
 curl -H "Authorization: $POSTIZ_API_KEY" "$POSTIZ_BASE_URL/public/v1/integrations"
 ```
 
-Also fill in `knowledge_sources` (URLs to re-scrape on every scheduled run)
-and `posts_per_run`. Add a `projects:` entry per brand for any campaign/theme
-that should get its own topic focus and rotation.
+Also fill in `knowledge_sources` (URLs to re-scrape on every scheduled run),
+`knowledge_folders` (local folders of markdown -- an Obsidian vault or any
+folder of `.md` files, re-ingested the same way; `.obsidian`/`.trash`/
+`.stversions` subfolders are skipped automatically), and `posts_per_run`.
+Add a `projects:` entry per brand for any campaign/theme that should get
+its own topic focus and rotation.
 
 Two more per-brand (and, for `active`, also per-project) fields, both
 optional and defaulted safely:

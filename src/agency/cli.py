@@ -88,16 +88,25 @@ def _fail_on_local_inference_unavailable(brand_slug: str, exc: LocalInferenceUna
 
 
 def _run_ingest(args: argparse.Namespace, settings: Settings) -> None:
+    if not args.urls and not args.folders:
+        print("Pass at least one --url or --folder", file=sys.stderr)
+        sys.exit(1)
     customer = load_customer(args.org)
     brand = find_brand(customer, args.brand)
     agent = KnowledgeAgent(settings.knowledge_root)
     try:
-        for url in args.urls:
+        for url in args.urls or []:
             try:
                 doc = agent.ingest_url(customer.slug, brand.slug, url)
                 print(f"ingested {url} -> {doc.markdown_path} ({len(doc.asset_paths)} assets)")
             except RobotsDisallowed as exc:
                 print(f"skipped {url}: {exc}", file=sys.stderr)
+        for folder in args.folders or []:
+            try:
+                docs = agent.ingest_local_folder(customer.slug, brand.slug, folder)
+                print(f"ingested {folder} -> {len(docs)} document(s)")
+            except OSError as exc:
+                print(f"skipped {folder}: {exc}", file=sys.stderr)
     finally:
         agent.close()
 
@@ -690,10 +699,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="agency")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    ingest_parser = subparsers.add_parser("ingest", help="Scrape URLs into a brand's knowledge base")
+    ingest_parser = subparsers.add_parser(
+        "ingest", help="Scrape URLs and/or ingest local markdown folders (e.g. an Obsidian vault) into a brand's knowledge base"
+    )
     ingest_parser.add_argument("--org", required=True, help="Path to a customer YAML file")
     ingest_parser.add_argument("--brand", required=True, help="Brand slug within that customer")
-    ingest_parser.add_argument("--url", action="append", required=True, dest="urls")
+    ingest_parser.add_argument("--url", action="append", default=None, dest="urls")
+    ingest_parser.add_argument(
+        "--folder", action="append", default=None, dest="folders",
+        help="Local folder of markdown to ingest recursively (e.g. an Obsidian vault path); repeatable",
+    )
 
     illustrate_parser = subparsers.add_parser(
         "illustrate", help="Generate an image via a local ComfyUI instance and save it to the brand's asset bank"

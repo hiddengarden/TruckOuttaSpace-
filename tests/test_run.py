@@ -53,11 +53,17 @@ class RaisingProvider:
 class FakeKnowledgeAgent:
     def __init__(self):
         self.ingested = []
+        self.ingested_folders = []
 
     def ingest_url(self, customer_slug, brand_slug, url):
         if "blocked" in url:
             raise RobotsDisallowed(f"robots.txt disallows {url}")
         self.ingested.append((customer_slug, brand_slug, url))
+
+    def ingest_local_folder(self, customer_slug, brand_slug, folder):
+        if "missing" in str(folder):
+            raise NotADirectoryError(f"{folder} is not a directory")
+        self.ingested_folders.append((customer_slug, brand_slug, folder))
 
 
 class FakePostizClient:
@@ -86,7 +92,10 @@ class TrackingArtist:
         return [out]
 
 
-def _brand(slug="widgets", knowledge_sources=None, projects=None, active=True, allow_cloud_fallback=False):
+def _brand(
+    slug="widgets", knowledge_sources=None, knowledge_folders=None, projects=None, active=True,
+    allow_cloud_fallback=False,
+):
     return Brand(
         slug=slug,
         name=slug.title(),
@@ -95,6 +104,7 @@ def _brand(slug="widgets", knowledge_sources=None, projects=None, active=True, a
         voice="plain",
         audience="everyone",
         knowledge_sources=knowledge_sources or [],
+        knowledge_folders=knowledge_folders or [],
         posts_per_run=1,
         projects=projects or [],
         active=active,
@@ -130,6 +140,23 @@ def test_run_all_publishes_an_approved_topic(tmp_path):
     assert len(results) == 1
     assert results[0].outcomes[0].status == "published"
     assert results[0].outcomes[0].postiz_response == {"id": "post_1"}
+
+
+def test_run_all_ingests_configured_knowledge_folders(tmp_path):
+    customer = Customer(slug="acme", name="Acme", brands=[_brand(knowledge_folders=["/vault/notes"])])
+    results = _run_all([customer], tmp_path)
+
+    assert results[0].ingest_errors == []
+    assert results[0].outcomes[0].status == "published"
+
+
+def test_run_all_records_knowledge_folder_errors_but_still_composes(tmp_path):
+    customer = Customer(slug="acme", name="Acme", brands=[_brand(knowledge_folders=["/vault/missing"])])
+    results = _run_all([customer], tmp_path)
+
+    assert len(results[0].ingest_errors) == 1
+    assert "missing" in results[0].ingest_errors[0]
+    assert len(results[0].outcomes) == 1
 
 
 def test_run_all_records_ingest_errors_but_still_composes(tmp_path):

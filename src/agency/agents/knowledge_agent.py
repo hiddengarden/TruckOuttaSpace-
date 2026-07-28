@@ -21,6 +21,14 @@ _IMAGE_EXT_BY_MIME = {
     "image/gif": ".gif",
     "image/webp": ".webp",
 }
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+# Folders that show up inside a real vault but aren't content: Obsidian's
+# own config, its trash, and (seen in this project's own discovery output)
+# Syncthing's .stversions backup-history folder, which looks like a second
+# vault (it has its own .obsidian) but is just version history of the same
+# one.
+_SKIP_DIR_NAMES = {".obsidian", ".trash", ".stversions", ".git"}
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
 
 
 class RobotsDisallowed(Exception):
@@ -87,6 +95,76 @@ class KnowledgeAgent:
         self._upsert_manifest(brand_dir, doc)
         return doc
 
+    def ingest_local_folder(self, customer_slug: str, brand_slug: str, folder: Path | str) -> list[KnowledgeDoc]:
+        """Ingests every .md file under `folder` (recursively) into the same
+        per-brand corpus URL-scraped pages use -- an Obsidian vault (or any
+        folder of markdown) becomes just another knowledge source, read by
+        the same KnowledgeBase. Copies content into the corpus rather than
+        reading the vault in place, so the corpus stays self-contained and
+        portable even if the vault moves.
+
+        Known limitation: only plain markdown image syntax
+        `![alt](relative/path.png)` is resolved and copied; Obsidian's own
+        `![[wikilink]]` embed syntax is not rewritten (would need
+        vault-wide alias resolution, a separate feature) -- content still
+        ingests fine, embedded images just won't carry over for those.
+        """
+        folder = Path(folder)
+        if not folder.is_dir():
+            # Path.rglob() on a nonexistent directory silently yields
+            # nothing rather than raising -- without this check, a typo'd
+            # vault path would ingest zero docs with no error at all.
+            raise NotADirectoryError(f"{folder} is not a directory")
+        brand_dir = self._root / customer_slug / brand_slug
+        docs = []
+        for md_path in _discover_markdown_files(folder):
+            docs.append(self._ingest_local_file(brand_dir, folder, md_path))
+        return docs
+
+    def _ingest_local_file(self, brand_dir: Path, vault_root: Path, md_path: Path) -> KnowledgeDoc:
+        relative = md_path.relative_to(vault_root)
+        raw = md_path.read_text(errors="replace")
+        title = _first_heading(raw) or md_path.stem
+        slug = _slugify(str(relative.with_suffix(""))) or _slugify(md_path.stem)
+        fetched_at = datetime.now(timezone.utc).isoformat()
+
+        pages_dir = brand_dir / "pages"
+        pages_dir.mkdir(parents=True, exist_ok=True)
+        markdown_path = pages_dir / f"{slug}.md"
+        markdown_path.write_text(
+            f"---\nsource_url: {md_path}\ntitle: {title}\nfetched_at: {fetched_at}\n---\n\n{raw}"
+        )
+
+        asset_paths = self._copy_local_images(raw, md_path.parent, brand_dir / "assets" / slug)
+
+        doc = KnowledgeDoc(
+            id=slug,
+            source_url=str(md_path),
+            title=title,
+            markdown_path=str(markdown_path.relative_to(self._root)),
+            asset_paths=[str(p.relative_to(self._root)) for p in asset_paths],
+            fetched_at=fetched_at,
+        )
+        self._upsert_manifest(brand_dir, doc)
+        return doc
+
+    def _copy_local_images(self, markdown: str, page_dir: Path, assets_dir: Path) -> list[Path]:
+        matches = _MD_IMAGE_RE.findall(markdown)[:MAX_IMAGES_PER_PAGE]
+        saved: list[Path] = []
+        for i, ref in enumerate(matches):
+            if ref.startswith(("http://", "https://")):
+                continue  # a remote image inside local markdown -- not this method's job
+            source = (page_dir / ref).resolve()
+            if not source.is_file() or source.suffix.lower() not in _IMAGE_SUFFIXES:
+                continue
+            if source.stat().st_size > MAX_IMAGE_BYTES:
+                continue
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            dest = assets_dir / f"img-{i}{source.suffix.lower()}"
+            dest.write_bytes(source.read_bytes())
+            saved.append(dest)
+        return saved
+
     def _check_robots(self, url: str) -> None:
         parsed = urlparse(url)
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
@@ -133,6 +211,22 @@ class KnowledgeAgent:
 
     def close(self) -> None:
         self._client.close()
+
+
+def _discover_markdown_files(folder: Path) -> list[Path]:
+    return sorted(
+        p
+        for p in folder.rglob("*.md")
+        if not any(part in _SKIP_DIR_NAMES for part in p.relative_to(folder).parts)
+    )
+
+
+def _first_heading(markdown: str) -> str | None:
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip()
+    return None
 
 
 def _slugify(text: str) -> str:

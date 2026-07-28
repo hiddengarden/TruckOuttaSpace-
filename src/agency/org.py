@@ -40,6 +40,12 @@ class Brand(BaseModel):
     guidelines: list[str] = Field(default_factory=list)
     banned_topics: list[str] = Field(default_factory=list)
     knowledge_sources: list[str] = Field(default_factory=list)
+    # Local folders of markdown (e.g. an Obsidian vault) re-ingested on every
+    # scheduled run the same way knowledge_sources URLs are -- kept as a
+    # separate, explicitly-typed field rather than overloading
+    # knowledge_sources with a magic prefix, so which brands read from which
+    # vault is a plain, unambiguous config line.
+    knowledge_folders: list[str] = Field(default_factory=list)
     posts_per_run: int = Field(default=1, ge=1)
     projects: list[Project] = Field(default_factory=list)
     wordpress: WordPressConfig | None = None

@@ -29,6 +29,12 @@ brands:
     knowledge_sources:
       - "https://example.com/replace-with-your-about-page"
 
+    # Local folders of markdown, re-ingested the same way -- an Obsidian
+    # vault (or any folder of .md files) works directly; .obsidian/.trash/
+    # .stversions subfolders are skipped automatically.
+    # knowledge_folders:
+    #   - "/home/you/Documents/My vault"
+
     # Default posts proposed/drafted per run when a brand has no projects,
     # or a project below doesn't override it.
     posts_per_run: 1

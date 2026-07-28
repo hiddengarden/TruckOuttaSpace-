@@ -97,6 +97,12 @@ def run_all(
                     except (RobotsDisallowed, httpx.HTTPError) as exc:
                         results[key].ingest_errors.append(f"{url}: {exc}")
 
+                for folder in brand.knowledge_folders:
+                    try:
+                        knowledge_agent.ingest_local_folder(customer.slug, brand.slug, folder)
+                    except OSError as exc:
+                        results[key].ingest_errors.append(f"{folder}: {exc}")
+
                 knowledge_base = KnowledgeBase(customer.slug, brand.slug, knowledge_root)
                 topic_history = TopicHistory(state_root, customer.slug, brand.slug, key[2])
                 ctx = brand_context(brand, project)
