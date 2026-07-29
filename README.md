@@ -379,12 +379,25 @@ python -m agency.cli preflight
 ```
 
 Sanity-checks the whole stack before you trust a scheduled run: Postiz/
-Ollama/ComfyUI reachability, `.env` permissions, `POSTIZ_API_KEY` presence,
-whether Telegram/SMTP are configured, every ComfyUI workflow's
+Ollama/ComfyUI/Paperless reachability, `.env` permissions, `POSTIZ_API_KEY`
+presence, whether Telegram/SMTP are configured, every ComfyUI workflow's
 `.mapping.json` actually resolving against its `.json` template (catches a
 typo'd node id or renamed input before a real generation hits it), and that
 every file under `org/` parses. Exits non-zero if anything's wrong, so it
 can gate a deploy.
+
+When Postiz is reachable and `POSTIZ_API_KEY` is set, preflight also does a
+real, read-only `GET /public/v1/integrations` and validates the response
+against `agency/postiz/contract.py`'s `IntegrationRecord` -- the fields
+`Secretary`/`PostizClient` actually depend on (`id`/`name`/`disabled`), not
+an attempt to mirror Postiz's full DTO. This is the deliberate alternative
+to depending on Postiz's own CLI/SDK for drift protection (considered and
+rejected -- see `agency/postiz/client.py`'s `POSTIZ_APP_VERIFIED_AGAINST`:
+the official `postiz` CLI is a thin wrapper over these same endpoints with
+no added type safety, so it would relocate the coupling, not remove it).
+Extra fields Postiz adds later don't fail this check; a field this code
+depends on disappearing or changing type does -- loudly, at preflight,
+instead of as a `KeyError` mid-batch.
 
 ## Human review queue
 

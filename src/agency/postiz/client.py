@@ -6,13 +6,35 @@ import httpx
 
 PostType = Literal["draft", "schedule", "now", "update"]
 
+# Provenance, for diagnosing drift later: this client's request/response
+# shapes were verified directly against gitroomhq/postiz-app's `main`
+# branch source (not guessed, not from docs alone) as of 2026-07-29 --
+# apps/backend/src/services/auth/public.auth.middleware.ts for the auth
+# header, apps/backend/src/api/routes/integrations.controller.ts and the
+# fetched docker-compose.yaml's env vars for field/endpoint shapes.
+#
+# We deliberately do NOT depend on gitroomhq/postiz-agent (the official
+# `postiz` CLI, npm package "postiz"@2.0.15 as of the same date): its own
+# source (src/api.ts) shows it's a thin wrapper over these exact same
+# /public/v1 endpoints, with untyped `data: any` bodies -- adopting it would
+# add a Node.js runtime dependency and a subprocess boundary without
+# reducing our actual coupling to Postiz's wire shape (see
+# tests/test_postiz_contract.py / agency/postiz/contract.py for the
+# runtime check that actually catches drift, decided in place of CLI
+# adoption). Its source IS still useful as a free reference when
+# diagnosing a break or looking for a capability we haven't grounded yet
+# (e.g. it also covers /posts/{id}/missing, /release-id, /analytics,
+# /integration-settings/{id}, /integration-trigger/{id} -- none used here).
+POSTIZ_APP_VERIFIED_AGAINST = "gitroomhq/postiz-app@main, gitroomhq/postiz-agent (npm postiz@2.0.15), as of 2026-07-29"
+
 
 class PostizClient:
     """Thin wrapper over Postiz's public API (mounted at /public/v1).
 
     Auth: the raw API key is sent as the "Authorization" header (no "Bearer"
     prefix) -- see apps/backend/src/services/auth/public.auth.middleware.ts
-    in gitroomhq/postiz-app.
+    in gitroomhq/postiz-app. See POSTIZ_APP_VERIFIED_AGAINST above for what
+    this was checked against and why the official CLI isn't used instead.
     """
 
     def __init__(self, base_url: str, api_key: str, timeout: float = 30.0):

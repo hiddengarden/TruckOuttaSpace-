@@ -38,6 +38,7 @@ from agency.notifications.tickets import TicketRegistry
 from agency.org import brand_context, discover_customers, find_brand, find_project, load_customer
 from agency.paperless.client import PaperlessClient
 from agency.postiz.client import PostizClient
+from agency.postiz.contract import validate_integrations_contract
 from agency.run import resume_escalation, run_all
 from agency.wordpress.client import WordPressClient
 from agency.wordpress.publish import publish_publication_to_wordpress
@@ -664,7 +665,8 @@ def _run_preflight(settings: Settings) -> None:
 
     print("--- Service connectivity ---")
     devops = DevOps(settings)
-    for result in devops.check_service_health():
+    health_results = devops.check_service_health()
+    for result in health_results:
         print(f"{result.name}: {'OK' if result.ok else 'DOWN'} ({result.detail})")
         ok = ok and result.ok
 
@@ -676,6 +678,31 @@ def _run_preflight(settings: Settings) -> None:
     postiz_key_ok = bool(settings.postiz_api_key)
     print(f"POSTIZ_API_KEY: {'OK' if postiz_key_ok else 'MISSING'}")
     ok = ok and postiz_key_ok
+
+    print("\n--- Postiz API contract ---")
+    postiz_up = next((r.ok for r in health_results if r.name == "postiz"), False)
+    if not (postiz_up and postiz_key_ok):
+        print("skipped (Postiz not reachable or POSTIZ_API_KEY not set)")
+    else:
+        postiz_client = PostizClient(settings.postiz_base_url, settings.postiz_api_key)
+        try:
+            integrations = postiz_client.list_integrations()
+            problems = validate_integrations_contract(integrations)
+            if problems:
+                ok = False
+                for problem in problems:
+                    print(f"GET /public/v1/integrations: {problem}")
+            else:
+                print(f"GET /public/v1/integrations: OK ({len(integrations)} integration(s), contract matches)")
+        except (httpx.HTTPError, ValueError) as exc:
+            # ValueError covers response.json() failing on a non-JSON body
+            # (e.g. an HTML error/proxy page) -- a malformed response is
+            # exactly the kind of drift this check exists to catch, so it
+            # must be reported here, not crash the whole preflight command.
+            ok = False
+            print(f"GET /public/v1/integrations: request failed: {exc}")
+        finally:
+            postiz_client.close()
 
     print("\n--- Notification channels (both optional) ---")
     telegram_configured = bool(settings.telegram_bot_token and settings.telegram_chat_id)
