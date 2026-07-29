@@ -488,7 +488,18 @@ daily -- edit to taste.
 
 ## Deploying Postiz + WordPress staging
 
-`deploy/README.md` has the full Quadlet setup for running Postiz's own
+```bash
+./deploy/install.sh
+```
+
+Idempotent installer: sets up the venv, `.env`, data directories on the
+separate NVMe drive, secrets templates, and Quadlet units, then prints a
+numbered checklist of the manual steps left (filling in secrets, bringing
+containers up in dependency order, generating a Postiz API key). Safe to
+re-run -- never overwrites an existing `.env`, secrets file, or org
+customer YAML.
+
+`deploy/README.md` has the full detail behind what it sets up: Postiz's own
 stack (it needs Postgres, Redis, and -- since v2.12 -- Temporal with its own
 Postgres and Elasticsearch, 6 containers total) and a WordPress staging
 site alongside the agency, generated from and grounded against this

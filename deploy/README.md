@@ -78,54 +78,39 @@ single-machine deployments like this one.
 
 ## Setup
 
-1. Data lives on the NVMe `Storage` drive (`%h/Storage/agency-stack/...`),
-   not the OS's shared btrfs partition (`%h` itself is on it) -- matches
-   ComfyUI's own existing convention on this host and keeps the OS drive
-   from filling up. Only the container code/Quadlet files under `%h/agency`
-   are small enough that living on the OS partition doesn't matter.
+`./deploy/install.sh`, run from the repo root, automates everything that
+doesn't require a real secret value or a running Postiz: copies the repo to
+`~/agency` (matching `agency-run-all.service`'s `WorkingDirectory=%h/agency`
+convention -- skipped if you're already running from there), creates a
+venv and installs dependencies, creates `.env` from the template, creates
+every data directory under `~/Storage/agency-stack` (the NVMe drive, not
+the OS's shared btrfs partition -- matches ComfyUI's own convention and
+keeps the OS drive from filling up), copies the three secrets templates to
+`~/agency-stack/secrets/` (outside the repo, never committed), installs the
+Quadlet units to `~/.config/containers/systemd`, and runs
+`systemctl --user daemon-reload`. It's idempotent -- safe to re-run, and it
+never overwrites an `.env`, secrets file, or org customer YAML that already
+exists. It prints a numbered checklist of what's left (filling in secrets,
+bringing the containers up in dependency order, generating a Postiz API
+key, etc.) since none of that can be automated without real values from
+you.
 
-2. Secrets are NOT committed to this repo. Copy the templates outside the
-   repo and fill them in:
-   ```bash
-   mkdir -p ~/agency-stack/secrets
-   cp deploy/postiz.env.example ~/agency-stack/secrets/postiz.env
-   cp deploy/postiz-temporal-postgres.env.example ~/agency-stack/secrets/postiz-temporal-postgres.env
-   cp deploy/wordpress.env.example ~/agency-stack/secrets/wordpress.env
-   chmod 600 ~/agency-stack/secrets/*.env
-   # fill in every blank value in all three files
-   ```
+```bash
+./deploy/install.sh
+```
 
-3. Deploy this repo (code + Quadlet files) to `~/agency` -- matches
-   `agency-run-all.service`'s existing `WorkingDirectory=%h/agency`
-   convention, and `postiz-temporal.container` mounts
-   `%h/agency/deploy/temporal-dynamicconfig` directly:
-   ```bash
-   mkdir -p ~/agency && cp -r . ~/agency
-   ```
+The checklist it prints covers the same steps that used to be spelled out
+manually here -- follow it. The one thing worth calling out ahead of time:
+containers come up in dependency order (`postiz-postgres`/`postiz-redis`/
+`postiz-temporal-postgres`/`postiz-temporal-elasticsearch` first, then
+`postiz-temporal`, then `postiz`; `wordpress-db` before `wordpress`) --
+each unit's own `Requires=`/`After=` will also pull in what it needs, but
+starting explicitly in order the first time makes a failure easier to
+diagnose than letting systemd's dependency resolution do it silently.
 
-4. Install the Quadlet units and bring the stack up, in dependency order
-   (each unit's own `Requires=`/`After=` will also pull in what it needs,
-   but starting explicitly in order the first time makes failures easier to
-   diagnose):
-   ```bash
-   mkdir -p ~/.config/containers/systemd
-   cp deploy/systemd/*.container deploy/systemd/*.network ~/.config/containers/systemd/
-   systemctl --user daemon-reload
-
-   systemctl --user enable --now postiz-postgres.service postiz-redis.service \
-     postiz-temporal-postgres.service postiz-temporal-elasticsearch.service
-   systemctl --user enable --now postiz-temporal.service
-   systemctl --user enable --now postiz.service
-
-   systemctl --user enable --now wordpress-db.service
-   systemctl --user enable --now wordpress.service
-   ```
-
-5. Verify: `curl http://localhost:5000` (Postiz), `curl http://localhost:8090`
-   (WordPress), then set `POSTIZ_BASE_URL=http://localhost:5000` and
-   `POSTIZ_API_KEY=...` (Settings -> Public API in the Postiz dashboard once
-   it's up) in the agency's own `.env`, and run `python -m agency.cli
-   preflight` to confirm the agency app itself can reach it.
+Verify once it's up: `curl http://localhost:5000` (Postiz), `curl
+http://localhost:8090` (WordPress), then `python -m agency.cli preflight`
+from `~/agency` to confirm the agency app itself can reach everything.
 
 ## SELinux
 
