@@ -627,3 +627,19 @@ model runner is required to run the suite.
   model (e.g. `ollama pull llava` or `qwen3-vl`) is pulled: run `agency
   illustrate` then let `Designer` review the result, before trusting the
   QC gate on a real batch.
+- A dedicated cross-encoder reranker in place of `KnowledgeBase`'s current
+  LLM-prompted rerank (`_rerank()` in `knowledge.py`, which reuses the
+  brand's own general model with a JSON-ranking prompt). Ollama has no
+  native rerank support (only chat/embed layers -- confirmed, not assumed:
+  no `/api/rerank`, and the upstream PR for one has sat unmerged). Text
+  Embeddings Inference is the usual self-hosted answer but its AMD ROCm
+  support only covers MI200/MI300 Instinct cards, not consumer Radeon.
+  `llama.cpp`'s `llama-server --reranking` (`/v1/rerank`) is the better
+  fit here -- same engine Ollama itself is built on, same broad
+  consumer-ROCm support already relied on for `ollama-rocm`, and real GGUF
+  reranker conversions exist (`bge-reranker-v2-m3-GGUF`, or
+  Qwen3-Reranker-0.6B for something smaller/faster). Worth doing once the
+  LLM-based rerank has actually been exercised against a real vault and
+  proven retrieval quality still needs it -- the workload itself (~10
+  short candidates, occasional calls) is small enough to run on CPU even,
+  sidestepping GPU contention with Ollama/ComfyUI entirely if so.
