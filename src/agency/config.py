@@ -37,6 +37,8 @@ class Settings:
     smtp_use_tls: bool
     paperless_base_url: str
     paperless_api_token: str
+    embedding_model: str
+    rerank_candidates: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -70,4 +72,10 @@ class Settings:
             smtp_use_tls=os.environ.get("SMTP_USE_TLS", "true").lower() not in ("false", "0", "no"),
             paperless_base_url=os.environ.get("PAPERLESS_BASE_URL", "http://localhost:8010"),
             paperless_api_token=os.environ.get("PAPERLESS_API_TOKEN", ""),
+            # Blank by default -- explicit opt-in, since it names a model
+            # that has to actually be pulled in Ollama first (e.g.
+            # `ollama pull nomic-embed-text`). Left blank, KnowledgeBase
+            # falls back to keyword search exactly as before this existed.
+            embedding_model=os.environ.get("EMBEDDING_MODEL", ""),
+            rerank_candidates=int(os.environ.get("RERANK_CANDIDATES", "10")),
         )

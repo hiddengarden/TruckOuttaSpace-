@@ -37,6 +37,8 @@ def _settings(**overrides) -> Settings:
         smtp_use_tls=True,
         paperless_base_url="http://paperless.local",
         paperless_api_token="",
+        embedding_model="",
+        rerank_candidates=10,
     )
     base.update(overrides)
     return Settings(**base)

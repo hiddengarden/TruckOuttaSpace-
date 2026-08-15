@@ -21,10 +21,22 @@ class OpenAICompatProvider:
     """Talks to any OpenAI-compatible /chat/completions endpoint (Ollama, OpenRouter, ...).
 
     complete_with_image uses the standard OpenAI vision content-parts shape
-    (`{"type": "image_url", "image_url": {"url": "data:...;base64,..."}}`),
-    per OpenAI's own spec and Ollama's official OpenAI-compatibility docs --
-    it requires a vision-capable model (e.g. Ollama's llava) configured on
-    whichever endpoint receives it.
+    (`{"type": "image_url", "image_url": {"url": "data:...;base64,..."}}`).
+    Verified against Ollama's actual request-parsing source
+    (openai/openai.go's chat-completions handler), not just docs: Ollama's
+    own examples show a bare-string `image_url`, but the parser explicitly
+    accepts both that and this nested `{"url": ...}` form -- so this single
+    shape works unmodified against both Ollama and OpenRouter (which, per
+    its own docs, requires the nested form). Two real constraints confirmed
+    from that same source, not assumed: only base64 data URIs work (an
+    http(s) URL is explicitly rejected -- "please use base64 encoded data
+    instead"), and only jpeg/jpg/png/webp mime prefixes are accepted -- gif
+    is not (see designer.py's _MIME_BY_SUFFIX comment). Requires a
+    vision-capable model (e.g. Ollama's llava/qwen3-vl) configured on
+    whichever endpoint receives it -- this method has never been run
+    against a live model in this codebase's own development, only
+    respx-mocked; this docstring's grounding is source-level, not an
+    end-to-end confirmation.
     """
 
     def __init__(self, base_url: str, model: str, api_key: str = "", timeout: float = 30.0):

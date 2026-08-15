@@ -29,6 +29,7 @@ from agency.comfyui.workflow import validate_workflow_mapping
 from agency.config import Settings
 from agency.escalations import EscalationRegistry
 from agency.graph import build_compose_graph, build_finalize_graph, initial_compose_state, initial_finalize_input
+from agency.inference.embeddings import EmbeddingProvider, OllamaEmbeddingProvider
 from agency.inference.provider import LocalInferenceUnavailable, default_provider
 from agency.knowledge import KnowledgeBase
 from agency.ledger import RunLedger
@@ -81,6 +82,12 @@ def _provider_for_brand(settings: Settings, ledger: RunLedger, brand_slug: str, 
     return default_provider(settings, allow_fallback=allow_cloud_fallback, on_fallback=on_fallback)
 
 
+def _embedding_provider_from_settings(settings: Settings) -> EmbeddingProvider | None:
+    if not settings.embedding_model:
+        return None
+    return OllamaEmbeddingProvider(settings.ollama_base_url, settings.embedding_model)
+
+
 def _fail_on_local_inference_unavailable(brand_slug: str, exc: LocalInferenceUnavailable) -> None:
     print(
         f"Local inference unavailable and brand '{brand_slug}' has allow_cloud_fallback: false "
@@ -96,7 +103,7 @@ def _run_ingest(args: argparse.Namespace, settings: Settings) -> None:
         sys.exit(1)
     customer = load_customer(args.org)
     brand = find_brand(customer, args.brand)
-    agent = KnowledgeAgent(settings.knowledge_root)
+    agent = KnowledgeAgent(settings.knowledge_root, embedding_provider=_embedding_provider_from_settings(settings))
     paperless_client = None
     try:
         for url in args.urls or []:
@@ -296,7 +303,8 @@ def _run_assemble(args: argparse.Namespace, settings: Settings) -> None:
 
         output_dir = Path(settings.assets_root) / customer.slug / brand.slug / "generated" / "videos"
         video_path, verdict = worker.assemble_and_review(
-            ctx, args.brief, image_paths, output_dir, audio_path=args.audio, seconds_per_image=args.seconds_per_image
+            ctx, args.brief, image_paths, output_dir, audio_path=args.audio, seconds_per_image=args.seconds_per_image,
+            burn_captions=args.captions, whisper_model=args.whisper_model,
         )
     except LocalInferenceUnavailable as exc:
         _fail_on_local_inference_unavailable(brand.slug, exc)
@@ -387,7 +395,10 @@ def _run_draft(args: argparse.Namespace, settings: Settings) -> None:
     ledger = _ledger(settings, director)
 
     provider = _provider_for_brand(settings, ledger, brand.slug, brand.allow_cloud_fallback)
-    knowledge_base = KnowledgeBase(customer.slug, brand.slug, settings.knowledge_root)
+    knowledge_base = KnowledgeBase(
+        customer.slug, brand.slug, settings.knowledge_root,
+        embedding_provider=_embedding_provider_from_settings(settings), reranker_provider=provider,
+    )
     postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
 
     comfyui_client = None
@@ -461,7 +472,8 @@ def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
 
     director = _director_from_settings(settings)
     ledger = _ledger(settings, director)
-    knowledge_agent = KnowledgeAgent(settings.knowledge_root)
+    embedding_provider = _embedding_provider_from_settings(settings)
+    knowledge_agent = KnowledgeAgent(settings.knowledge_root, embedding_provider=embedding_provider)
     postiz_client = None if args.dry_run else PostizClient(settings.postiz_base_url, settings.postiz_api_key)
     escalations = EscalationRegistry(settings.state_root)
     comfyui_client = ComfyUIClient(settings.comfyui_base_url) if args.with_images else None
@@ -496,6 +508,7 @@ def _run_batch(args: argparse.Namespace, settings: Settings) -> None:
                 assets_root=settings.assets_root,
                 only=_parse_only(args.only),
                 paperless_client=paperless_client,
+                embedding_provider=embedding_provider,
             )
     finally:
         knowledge_agent.close()
@@ -848,6 +861,14 @@ def main() -> None:
     assemble_parser.add_argument("--audio", default=None, help="Optional background audio track path")
     assemble_parser.add_argument("--seconds-per-image", type=float, default=3.0)
     assemble_parser.add_argument("--no-review", action="store_true", help="Skip the Designer's post-assembly QC pass")
+    assemble_parser.add_argument(
+        "--captions", action="store_true",
+        help="Transcribe --audio via Whisper and burn the result in as subtitles (needs the `whisper` CLI on "
+        "PATH -- pip install openai-whisper -- and speech in --audio, not just music)",
+    )
+    assemble_parser.add_argument(
+        "--whisper-model", default="base", help="Whisper model size for --captions (default: base)"
+    )
 
     write_publication_parser = subparsers.add_parser(
         "write-publication", help="Write a long-form publication (book/course/ebook) as markdown"

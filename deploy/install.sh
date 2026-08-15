@@ -31,6 +31,24 @@ if ! command -v podman >/dev/null; then
     warn "podman not found on PATH -- needed for illustrate/animate/compose and the Postiz/WordPress deploy (not for text-only commands like draft/run-all --dry-run)"
 fi
 
+# The Postiz stack alone is 6 containers, including Elasticsearch and a
+# second Postgres for Temporal -- on a host also running Ollama, ComfyUI,
+# Paperless, Khoj, and n8n, headroom is the thing most likely to bite
+# silently (OOM-killed containers restart-looping rather than failing
+# loudly). Check now, not after everything's already enabled.
+if [ -r /proc/meminfo ]; then
+    MEM_AVAILABLE_KB=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+    MEM_TOTAL_KB=$(awk '/MemTotal:/ {print $2}' /proc/meminfo)
+    MEM_AVAILABLE_GB=$((MEM_AVAILABLE_KB / 1024 / 1024))
+    MEM_TOTAL_GB=$((MEM_TOTAL_KB / 1024 / 1024))
+    log "System memory: ${MEM_AVAILABLE_GB}GB available of ${MEM_TOTAL_GB}GB total"
+    if [ "$MEM_AVAILABLE_KB" -lt $((6 * 1024 * 1024)) ]; then
+        warn "Less than 6GB available right now. Elasticsearch/Temporal/2x Postgres/Redis/Postiz/MariaDB want roughly that much just to start, before Ollama or ComfyUI load a model. Close some of what's already running, or expect OOM restart-looping rather than a clean failure -- check with 'podman stats' / 'free -h' after bringing the stack up."
+    fi
+else
+    warn "Can't read /proc/meminfo to check RAM headroom (not Linux?) -- the Postiz stack alone is 6 containers including Elasticsearch; check free memory yourself before enabling it."
+fi
+
 # --- 2. Copy the repo to AGENCY_HOME (matches agency-run-all.service's
 #        %h/agency convention) -- skipped if already running from there.
 #        Never deletes anything already present at the destination. ---

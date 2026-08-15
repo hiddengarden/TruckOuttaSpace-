@@ -10,6 +10,8 @@ import httpx
 from bs4 import BeautifulSoup
 from markdownify import markdownify
 
+from agency.inference.embeddings import EmbeddingProvider
+
 MAX_IMAGES_PER_PAGE = 5
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 USER_AGENT = "agency-knowledge-bot/0.1 (+brand knowledge base builder)"
@@ -52,13 +54,29 @@ class KnowledgeAgent:
       pages/<slug>.md          -- markdown with a small YAML-ish front matter
       assets/<slug>/img-N.ext  -- images found in that page's main content
       manifest.json            -- list of KnowledgeDoc records
+      embeddings.json          -- {doc_id: [float, ...]}, only if an
+                                   embedding_provider was configured
+
+    `embedding_provider`, if given, computes and persists an embedding for
+    every ingested doc's content -- best-effort: a failure (model not
+    pulled, Ollama unreachable) is caught and logged to the doc's manifest
+    entry area, never blocks ingestion, since KnowledgeBase.retrieve()
+    falls back to keyword search when embeddings aren't available (see
+    knowledge.py). Left unset (the default), behavior is unchanged from
+    before this existed.
     """
 
-    def __init__(self, knowledge_root: Path | str, client: httpx.Client | None = None):
+    def __init__(
+        self,
+        knowledge_root: Path | str,
+        client: httpx.Client | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
+    ):
         self._root = Path(knowledge_root)
         self._client = client or httpx.Client(
             headers={"User-Agent": USER_AGENT}, timeout=20.0, follow_redirects=True
         )
+        self._embedding_provider = embedding_provider
 
     def ingest_url(self, customer_slug: str, brand_slug: str, url: str) -> KnowledgeDoc:
         self._check_robots(url)
@@ -93,6 +111,7 @@ class KnowledgeAgent:
             fetched_at=fetched_at,
         )
         self._upsert_manifest(brand_dir, doc)
+        self._maybe_embed(brand_dir, doc.id, f"{title}\n\n{markdown}")
         return doc
 
     def ingest_local_folder(self, customer_slug: str, brand_slug: str, folder: Path | str) -> list[KnowledgeDoc]:
@@ -146,6 +165,7 @@ class KnowledgeAgent:
             fetched_at=fetched_at,
         )
         self._upsert_manifest(brand_dir, doc)
+        self._maybe_embed(brand_dir, doc.id, f"{title}\n\n{raw}")
         return doc
 
     def _copy_local_images(self, markdown: str, page_dir: Path, assets_dir: Path) -> list[Path]:
@@ -207,6 +227,7 @@ class KnowledgeAgent:
             markdown_path=str(markdown_path.relative_to(self._root)), fetched_at=fetched_at,
         )
         self._upsert_manifest(brand_dir, doc)
+        self._maybe_embed(brand_dir, doc.id, f"{title}\n\n{content}")
         return doc
 
     def _check_robots(self, url: str) -> None:
@@ -252,6 +273,26 @@ class KnowledgeAgent:
         manifest.append(doc.__dict__)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(manifest, indent=2))
+
+    def _maybe_embed(self, brand_dir: Path, doc_id: str, content: str) -> None:
+        if self._embedding_provider is None:
+            return
+        try:
+            embedding = self._embedding_provider.embed(content)
+        except Exception:
+            # Best-effort, same principle as illustrate_node's ComfyUI call:
+            # an embedding model not being pulled yet must not block
+            # ingesting the actual content. KnowledgeBase.retrieve() falls
+            # back to keyword search for docs with no embedding on file.
+            return
+        self._upsert_embedding(brand_dir, doc_id, embedding)
+
+    def _upsert_embedding(self, brand_dir: Path, doc_id: str, embedding: list[float]) -> None:
+        path = brand_dir / "embeddings.json"
+        embeddings = json.loads(path.read_text()) if path.exists() else {}
+        embeddings[doc_id] = embedding
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(embeddings))
 
     def close(self) -> None:
         self._client.close()

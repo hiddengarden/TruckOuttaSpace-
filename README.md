@@ -111,8 +111,15 @@ instance.
     `state/<customer>/<brand>/<project-or-_default>/topic_history.json`),
     and aware of a project's `topic_hint` (its campaign focus) when set.
   - `ContentAgent` drafts copy in the brand's voice, grounded in the corpus
-    via `KnowledgeBase` (lexical keyword overlap for the MVP, no embeddings
-    yet).
+    via `KnowledgeBase`. Three retrieval modes, each degrading gracefully to
+    the next: embeddings + LLM rerank (both `EMBEDDING_MODEL` set and a
+    reranker provider given -- a bi-encoder-then-reranker pattern, since
+    keyword overlap alone surfaces the wrong note often once a corpus is in
+    the thousands, e.g. a large Obsidian vault, and every downstream stage
+    inherits that error); embeddings only (no rerank pass); lexical keyword
+    overlap (the original MVP behavior -- also what any individual doc
+    without a stored embedding falls back to, and what happens on any
+    runtime failure of the other two). See "KnowledgeBase retrieval" below.
   - `SupervisorAgent` reviews every draft against the brand's
     guidelines/banned topics, with up to one revision round before the
     graph escalates instead of silently giving up.
@@ -233,6 +240,43 @@ optional and defaulted safely:
 - `active: false` -- pause a brand or project so `run-all`/`loop` skip it
   entirely, without deleting its config. Defaults to `true`.
 
+## KnowledgeBase retrieval: embeddings + rerank
+
+Off by default -- `KnowledgeBase.retrieve()` uses lexical keyword overlap
+unless `EMBEDDING_MODEL` is set in `.env`:
+
+```bash
+ollama pull nomic-embed-text   # or any Ollama embedding model
+```
+```
+EMBEDDING_MODEL=nomic-embed-text
+```
+
+With that set, every doc ingested (or re-ingested) from then on also gets
+an embedding computed and stored (`agency/inference/embeddings.py`'s
+`OllamaEmbeddingProvider`, grounded against Ollama's real `/api/embed`
+request/response shape) alongside the existing `manifest.json`, in a
+sibling `embeddings.json`. `KnowledgeBase.retrieve()` then: embeds the
+topic, ranks every doc that has a stored embedding by cosine similarity
+for a shortlist (`RERANK_CANDIDATES`, default 10), then asks the brand's
+own local LLM to reorder that shortlist by actual relevance to the topic
+(a bi-encoder-then-reranker pattern) before taking the final top-`k`.
+
+Degrades gracefully at every step, never fails a draft over it: a doc with
+no stored embedding yet (not re-ingested since `EMBEDDING_MODEL` was set)
+is simply excluded from the embedding path rather than crashing it; if the
+embedding call itself fails (model not pulled, Ollama unreachable), the
+whole retrieval falls back to the original keyword-overlap search; if the
+LLM rerank call fails or returns something unparseable, results stay in
+embedding-similarity order instead of failing outright.
+
+Why this matters more than it might sound: keyword overlap alone surfaces
+the wrong note often once a corpus is in the thousands (e.g. a large
+Obsidian vault via `knowledge_folders`), and every downstream stage --
+`TopicAgent`'s proposals, `ContentAgent`'s draft -- inherits whatever
+`KnowledgeBase` handed it, with no later stage able to notice or correct a
+bad retrieval.
+
 ## Run the vertical slice
 
 Build a brand's knowledge base first (repeatable -- re-ingesting a URL
@@ -287,9 +331,11 @@ Omit `--style` and the `Designer` picks one from whatever workflows exist
 under `workflows_dir`; pass `--style default` to force a specific one. After
 generation the `Designer` reviews the output (needs a vision-capable model;
 add `--no-review` to skip). Saves output(s) to
-`assets/<customer>/<brand>/generated/images/`. Not yet wired into
-`draft`/`run-all` -- attaching a generated image to a Postiz post needs
-`POST /public/v1/upload` first, which isn't built yet.
+`assets/<customer>/<brand>/generated/images/`. Running `illustrate` standalone
+like this is for previewing/tuning a brief or workflow style in isolation;
+`draft --with-image`/`run-all --with-images` (above) is the path that
+actually attaches a generated image to a published post, via
+`PostizClient.upload_media()`.
 
 ## Generating a video (VideoMaster + ComfyUI)
 
@@ -358,6 +404,23 @@ python -m agency.cli assemble --org org/my_customer.yaml --brand my-brand \
 Or pass explicit `--image` paths. Saves to
 `assets/<customer>/<brand>/generated/videos/assembled.mp4`, and (unless
 `--no-review`) has `Designer` review the first extracted frame.
+
+Add `--captions` to burn in subtitles transcribed from `--audio` via
+Whisper -- a meaningful reach lift on Reels/TikTok, where captions are
+commonly watched with sound off:
+
+```bash
+python -m agency.cli assemble --org org/my_customer.yaml --brand my-brand \
+  --brief "product highlights reel" --audio assets/my-customer/my-brand/generated/audio/narration.flac \
+  --captions --whisper-model small
+```
+
+Needs the `whisper` CLI on `PATH` (`pip install openai-whisper`, kept as a
+separate external binary this code shells out to -- same pattern as
+`ffmpeg` -- so installing this project never pulls in PyTorch). Only
+meaningful when `--audio` actually contains speech, not just music; a
+silent/music-only track just produces an empty transcript, a harmless
+no-op. Saves to `assets/<customer>/<brand>/generated/videos/assembled-captioned.mp4`.
 
 ## Admin, DevOps, and R&D
 
@@ -555,7 +618,12 @@ model runner is required to run the suite.
   revenue/analytics integration exists (see Notifications above).
 - Feedback loop from Postiz analytics (`GET /public/v1/analytics/:integration`)
   back into the content agent's and topic agent's prompts.
-- Embedding-based retrieval in `KnowledgeBase` instead of keyword overlap,
-  once corpora get large.
 - Per-brand/project run cadence (right now every customer in `org/` gets the
   same interval from `loop`/the systemd timer).
+- `complete_with_image()` (the vision path `Designer.review_asset()` runs
+  through) is grounded against Ollama's real request-parsing source, not
+  guessed, but has never been run against an actual vision model end to
+  end -- only respx-mocked. Worth an early, cheap real test once a vision
+  model (e.g. `ollama pull llava` or `qwen3-vl`) is pulled: run `agency
+  illustrate` then let `Designer` review the result, before trusting the
+  QC gate on a real batch.

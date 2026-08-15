@@ -13,6 +13,7 @@ from agency.agents.topic_agent import TopicAgent
 from agency.comfyui.client import ComfyUIClient
 from agency.escalations import EscalationRegistry
 from agency.graph import build_compose_graph, build_finalize_graph, initial_compose_state, initial_finalize_input
+from agency.inference.embeddings import EmbeddingProvider
 from agency.inference.provider import LLMProvider, LocalInferenceUnavailable, unload_ollama
 from agency.knowledge import KnowledgeBase
 from agency.ledger import RunLedger
@@ -65,6 +66,7 @@ def run_all(
     assets_root: str | None = None,
     only: set[tuple[str, str]] | None = None,
     paperless_client: PaperlessClient | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
 ) -> list[RunResult]:
     """Two global phases, not per-brand: every active customer/brand/project's
     text work (Ollama) runs to completion before any ComfyUI-heavy image work
@@ -117,10 +119,16 @@ def run_all(
                     except httpx.HTTPError as exc:
                         results[key].ingest_errors.append(f"paperless: {exc}")
 
-                knowledge_base = KnowledgeBase(customer.slug, brand.slug, knowledge_root)
                 topic_history = TopicHistory(state_root, customer.slug, brand.slug, key[2])
                 ctx = brand_context(brand, project)
                 provider = provider_factory(brand.allow_cloud_fallback)
+                # Reuses this brand's own provider as the reranker -- same
+                # local model already configured for this brand, no new
+                # per-brand config surface needed for it.
+                knowledge_base = KnowledgeBase(
+                    customer.slug, brand.slug, knowledge_root,
+                    embedding_provider=embedding_provider, reranker_provider=provider,
+                )
                 topic_agent = TopicAgent(provider)
 
                 try:

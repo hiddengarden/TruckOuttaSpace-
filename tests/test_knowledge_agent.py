@@ -157,6 +157,75 @@ def test_ingest_local_folder_raises_clearly_on_missing_folder(tmp_path):
         agent.ingest_local_folder("acme", "widgets", tmp_path / "does-not-exist")
 
 
+# --- embedding computation at ingest time ---
+
+
+class FakeEmbeddingProvider:
+    def __init__(self, fail: bool = False):
+        self.calls = []
+        self._fail = fail
+
+    def embed(self, text):
+        self.calls.append(text)
+        if self._fail:
+            raise ConnectionError("embedding model not pulled")
+        return [float(len(text) % 7), 0.5, 1.0]
+
+
+def test_ingest_local_folder_persists_embedding_when_provider_configured(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir(parents=True)
+    (vault / "note.md").write_text("# Note\n\ncontent here")
+    provider = FakeEmbeddingProvider()
+
+    agent = KnowledgeAgent(tmp_path / "knowledge", embedding_provider=provider)
+    docs = agent.ingest_local_folder("acme", "widgets", vault)
+
+    assert len(provider.calls) == 1
+    embeddings = json.loads((tmp_path / "knowledge" / "acme" / "widgets" / "embeddings.json").read_text())
+    assert docs[0].id in embeddings
+    assert embeddings[docs[0].id] == [float(len(provider.calls[0]) % 7), 0.5, 1.0]
+
+
+def test_ingest_without_embedding_provider_writes_no_embeddings_file(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir(parents=True)
+    (vault / "note.md").write_text("# Note\n\ncontent")
+
+    KnowledgeAgent(tmp_path / "knowledge").ingest_local_folder("acme", "widgets", vault)
+
+    assert not (tmp_path / "knowledge" / "acme" / "widgets" / "embeddings.json").exists()
+
+
+def test_embedding_failure_does_not_block_ingestion(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir(parents=True)
+    (vault / "note.md").write_text("# Note\n\ncontent")
+    provider = FakeEmbeddingProvider(fail=True)
+
+    agent = KnowledgeAgent(tmp_path / "knowledge", embedding_provider=provider)
+    docs = agent.ingest_local_folder("acme", "widgets", vault)  # must not raise
+
+    assert len(docs) == 1
+    assert not (tmp_path / "knowledge" / "acme" / "widgets" / "embeddings.json").exists()
+
+
+def test_reingesting_updates_embedding_in_place(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir(parents=True)
+    (vault / "note.md").write_text("# Note\n\nv1")
+    provider = FakeEmbeddingProvider()
+    agent = KnowledgeAgent(tmp_path / "knowledge", embedding_provider=provider)
+
+    agent.ingest_local_folder("acme", "widgets", vault)
+    (vault / "note.md").write_text("# Note\n\nv2 much longer content than before")
+    docs = agent.ingest_local_folder("acme", "widgets", vault)
+
+    embeddings = json.loads((tmp_path / "knowledge" / "acme" / "widgets" / "embeddings.json").read_text())
+    assert len(embeddings) == 1  # upserted, not duplicated
+    assert embeddings[docs[0].id] == [float(len(provider.calls[-1]) % 7), 0.5, 1.0]
+
+
 def test_ingest_local_folder_skips_obsidian_and_syncthing_internal_dirs(tmp_path):
     vault = tmp_path / "vault"
     (vault / ".obsidian").mkdir(parents=True)

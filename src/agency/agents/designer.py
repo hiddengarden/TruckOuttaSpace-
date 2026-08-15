@@ -11,6 +11,13 @@ _MIME_BY_SUFFIX = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
+    # Ollama's vision endpoint (per its actual request-parsing source,
+    # openai/openai.go) only accepts jpeg/jpg/png/webp mime prefixes for a
+    # base64 data URI -- gif is rejected with "invalid image input". Not a
+    # live path today (ComfyUI's SaveImage always produces .png), but kept
+    # here so a .gif asset is still labeled correctly rather than silently
+    # mislabeled as png -- Ollama's own rejection is the honest failure
+    # mode if one ever does reach this method.
     ".gif": "image/gif",
 }
 
